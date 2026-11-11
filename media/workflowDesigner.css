@@ -1,0 +1,175 @@
+:root {
+  --border: var(--vscode-widget-border, var(--vscode-input-border, #8884));
+  --muted: var(--vscode-descriptionForeground);
+  --success: var(--vscode-testing-iconPassed, #3fb950);
+  --failure: var(--vscode-testing-iconFailed, #f85149);
+  --always: var(--vscode-charts-blue, #3794ff);
+  --start: var(--vscode-descriptionForeground, #888);
+  --node-bg: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --accent: var(--vscode-focusBorder, #007fd4);
+}
+html, body { height: 100%; }
+body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground);
+  background: var(--vscode-editor-background); margin: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+[hidden] { display: none !important; }
+
+header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex: none; }
+.logo { width: 44px; height: 44px; flex: none; }
+h1 { font-size: 1.4em; font-weight: 600; margin: 0 0 2px; }
+#wf-name { font-weight: normal; color: var(--muted); }
+#wf-name:not(:empty)::before { content: '— '; }
+.dirty { color: var(--vscode-editorWarning-foreground, #cca700); margin-left: 6px; font-size: 0.8em; vertical-align: middle; }
+.target { color: var(--muted); overflow-wrap: anywhere; }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 20px; border-bottom: 1px solid var(--border); flex: none; }
+.toolbar .spacer { flex: 1; }
+.toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+label.inline { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+#wf-select { min-width: 220px; max-width: 360px; }
+
+button { font: inherit; padding: 5px 12px; border: 1px solid transparent; border-radius: 2px; cursor: pointer;
+  color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+button:hover { background: var(--vscode-button-hoverBackground); }
+button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
+button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+button.danger { color: var(--vscode-errorForeground); }
+button.link { background: none; color: var(--vscode-textLink-foreground); padding: 0; }
+button:disabled { opacity: 0.55; cursor: default; }
+button:focus-visible, input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+input, textarea, select { font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent); padding: 5px 7px; border-radius: 2px; box-sizing: border-box; }
+select { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border-color: var(--vscode-dropdown-border, transparent); }
+textarea { resize: vertical; min-height: 60px; }
+textarea.code { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); tab-size: 2; white-space: pre; }
+.check { display: flex; align-items: center; gap: 6px; font-weight: normal; }
+.check input { margin: 0; accent-color: var(--vscode-button-background); }
+.check.option { margin-bottom: 10px; }
+
+.banner { padding: 8px 20px; border-left: 3px solid; flex: none; white-space: pre-wrap; }
+.banner.error { border-color: var(--vscode-errorForeground); background: var(--vscode-inputValidation-errorBackground); }
+.banner.success { border-color: var(--success); background: var(--vscode-editor-inactiveSelectionBackground); }
+.banner.info { border-color: var(--accent); background: var(--vscode-editor-inactiveSelectionBackground); }
+.banner ul { margin: 4px 0 0; padding-left: 20px; }
+
+main { flex: 1; display: flex; min-height: 0; }
+.canvas-wrap { flex: 1; position: relative; min-width: 0; overflow: hidden;
+  background-image: radial-gradient(var(--vscode-editorLineNumber-foreground, #8885) 1px, transparent 1px); background-size: 22px 22px; }
+#canvas { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; }
+#canvas.panning { cursor: grabbing; }
+#canvas:focus { outline: none; }
+
+/* Nodes */
+.node { cursor: pointer; }
+.node .box { fill: var(--node-bg); stroke: var(--border); stroke-width: 1.5; }
+.node:hover .box { stroke: var(--accent); }
+.node.selected .box { stroke: var(--accent); stroke-width: 2.5; }
+.node.problem .box { stroke: var(--vscode-errorForeground); stroke-width: 2.5; stroke-dasharray: 5 3; }
+.node.missing .box { stroke: var(--vscode-editorWarning-foreground, #cca700); stroke-dasharray: 4 3; }
+.node .stripe { stroke: none; }
+.node .name { fill: var(--vscode-foreground); font-size: 13px; font-weight: 600; }
+.node .sub { fill: var(--muted); font-size: 11px; }
+.node .badge-bg { stroke: none; }
+.node .badge-text { fill: #fff; font-size: 10px; font-weight: 700; text-anchor: middle; }
+.node .conv-bg { fill: var(--vscode-badge-background, #4d4d4d); }
+.node .conv-text { fill: var(--vscode-badge-foreground, #fff); font-size: 9px; font-weight: 700; text-anchor: middle; }
+.node .add { opacity: 0; transition: opacity 0.1s; }
+.node:hover .add, .node.selected .add, .node:focus-within .add { opacity: 1; }
+.add circle { fill: var(--vscode-button-background); stroke: var(--vscode-editor-background); stroke-width: 2; }
+.add text { fill: var(--vscode-button-foreground); font-size: 15px; font-weight: 700; text-anchor: middle; pointer-events: none; }
+.add:hover circle { fill: var(--vscode-button-hoverBackground); }
+.start .box { fill: var(--vscode-button-secondaryBackground, #3a3d41); stroke: none; }
+.start .name { fill: var(--vscode-button-secondaryForeground, #fff); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-anchor: middle; }
+.start .add { opacity: 1; }
+.linking .node.target-ok .box { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6 3; }
+.linking .node.target-no { opacity: 0.35; cursor: not-allowed; }
+.linking .node.link-source .box { stroke: var(--accent); stroke-width: 3; }
+
+/* Kind colors (badges in nodes and legend) */
+.k-job_template { --kind: #0066cc; }
+.k-workflow_job_template { --kind: #5e40be; }
+.k-project { --kind: #3d7317; }
+.k-inventory_source { --kind: #b35c00; }
+.k-system_job_template { --kind: #4d5258; }
+.k-workflow_approval { --kind: #a30000; }
+.node .badge-bg, .node .stripe { fill: var(--kind); }
+
+/* Links */
+.edge path.line { fill: none; stroke-width: 2; }
+.edge.success path.line { stroke: var(--success); }
+.edge.failure path.line { stroke: var(--failure); }
+.edge.always path.line { stroke: var(--always); }
+.edge.start path.line { stroke: var(--start); stroke-dasharray: 4 4; }
+.edge path.hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.edge.start path.hit { cursor: default; }
+.edge:hover path.line, .edge.selected path.line { stroke-width: 3.5; }
+.edge.selected path.line { filter: drop-shadow(0 0 2px var(--accent)); }
+.edge .edge-label { font-size: 10px; font-weight: 600; text-anchor: middle; paint-order: stroke; stroke: var(--vscode-editor-background); stroke-width: 3px; }
+.edge.success .edge-label { fill: var(--success); }
+.edge.failure .edge-label { fill: var(--failure); }
+.edge.always .edge-label { fill: var(--always); }
+.arrow.success { fill: var(--success); }
+.arrow.failure { fill: var(--failure); }
+.arrow.always { fill: var(--always); }
+.arrow.start { fill: var(--start); }
+
+.zoom { position: absolute; left: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+button.icon { width: 30px; height: 30px; padding: 0; font-size: 16px; line-height: 1; color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground); border-color: var(--border); }
+button.icon:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.legend { position: absolute; left: 52px; bottom: 12px; padding: 10px 12px; background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--border); border-radius: 3px; display: grid; gap: 5px; font-size: 0.92em; box-shadow: 0 2px 8px #0004; }
+.legend-title { font-weight: 600; }
+.legend .badge { display: inline-block; min-width: 22px; text-align: center; font-size: 10px; font-weight: 700; color: #fff;
+  background: var(--kind); border-radius: 3px; padding: 1px 3px; margin-right: 6px; }
+.legend .line { display: inline-block; width: 26px; height: 3px; vertical-align: middle; margin-right: 6px; }
+.legend .line.success { background: var(--success); }
+.legend .line.failure { background: var(--failure); }
+.legend .line.always { background: var(--always); }
+.legend .conv { display: inline-block; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; margin-right: 6px;
+  color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); }
+.hint-bar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 3px;
+  background: var(--vscode-editorWidget-background); border: 1px solid var(--accent); box-shadow: 0 2px 8px #0004; }
+.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #0006; }
+.overlay-box { background: var(--vscode-editorWidget-background); border: 1px solid var(--border); padding: 18px 22px; border-radius: 4px; max-width: 360px; text-align: center; }
+.empty-hint { position: absolute; top: 45%; left: 0; right: 0; text-align: center; color: var(--muted); pointer-events: none; }
+
+/* Side panel */
+aside { width: 380px; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 14px 16px 24px; box-sizing: border-box;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+aside h2 { font-size: 1.15em; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+aside h3 { font-size: 1em; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+aside .sub { color: var(--muted); margin: 0 0 12px; overflow-wrap: anywhere; }
+aside p { margin: 0 0 10px; line-height: 1.45; }
+aside kbd { font-family: var(--vscode-editor-font-family); font-size: 0.9em; padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field > label, .field > .label { font-weight: 600; }
+.field.required > label::after, .field.required > .label::after { content: ' *'; color: var(--vscode-errorForeground); }
+.field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea { width: 100%; }
+.field select[multiple] { min-height: 90px; }
+.field .row { display: flex; gap: 8px; align-items: center; }
+.field .row input[type=number] { width: 90px; }
+.hint { color: var(--muted); font-size: 0.9em; font-weight: normal; }
+.field-error { color: var(--vscode-errorForeground); font-size: 0.9em; }
+.invalid { border-color: var(--vscode-inputValidation-errorBorder) !important; }
+.radio-row { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.radio-row .check.success span { color: var(--success); }
+.radio-row .check.failure span { color: var(--failure); }
+.radio-row .check.always span { color: var(--always); }
+.loading { color: var(--muted); font-style: italic; }
+.form-buttons { display: flex; gap: 8px; margin-top: 16px; position: sticky; bottom: -24px; padding: 10px 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
+dl.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 12px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+.kind-pill { font-size: 10px; font-weight: 700; color: #fff; background: var(--kind); border-radius: 3px; padding: 2px 5px; }
+
+dialog { color: var(--vscode-foreground); background: var(--vscode-editorWidget-background); border: 1px solid var(--border); border-radius: 4px; max-width: 420px; }
+dialog::backdrop { background: #0006; }
+dialog .form-buttons { position: static; justify-content: flex-end; background: none; padding-bottom: 0; }
+
+@media (max-width: 760px) {
+  main { flex-direction: column; }
+  aside { width: auto; height: 45%; border-left: none; border-top: 1px solid var(--border); }
+}

@@ -1,0 +1,21 @@
+import { OrganizationInput } from '../aapClient';
+import { organizationPlaybook } from '../playbooks/organization';
+import { ResourceFormSpec } from '../views/resourceFormPanel';
+
+export const organizationForm: ResourceFormSpec<OrganizationInput> = {
+  viewType: 'aap.createOrganization',
+  noun: 'organization',
+  fields: [
+    { id: 'name', label: 'Name', type: 'text', required: true },
+    { id: 'description', label: 'Description', type: 'textarea' },
+  ],
+  parse(values) {
+    const name = values.name.trim();
+    if (!name) {
+      return { fieldErrors: { name: ['This field is required.'] } };
+    }
+    return { value: { name, description: values.description.trim() } };
+  },
+  create: (client, org) => client.createOrganization(org),
+  playbook: organizationPlaybook,
+};

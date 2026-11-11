@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Rounded hexagon badge -->
+  <path d="M128 10 Q136 10 143 14 L225 61 Q232 65 236 72 Q240 79 240 87 L240 169 Q240 177 236 184 Q232 191 225 195 L143 242 Q136 246 128 246 Q120 246 113 242 L31 195 Q24 191 20 184 Q16 177 16 169 L16 87 Q16 79 20 72 Q24 65 31 61 L113 14 Q120 10 128 10 Z" fill="#d71e1e"/>
+  <!-- An "A" drawn as an automation graph: legs are links, vertices are nodes -->
+  <g stroke="#fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M128 66 L76 186"/>
+    <path d="M128 66 L180 186"/>
+    <path d="M100 146 L156 146"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="128" cy="64" r="19"/>
+    <circle cx="74" cy="190" r="17"/>
+    <circle cx="182" cy="190" r="17"/>
+  </g>
+</svg>

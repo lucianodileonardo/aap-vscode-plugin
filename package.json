@@ -1,0 +1,155 @@
+{
+  "name": "aap-vscode",
+  "displayName": "Ansible Automation Platform",
+  "description": "Work with Red Hat Ansible Automation Platform 2.5 / 2.6 / 2.7 from VSCodium and VS Code.",
+  "version": "0.1.0",
+  "publisher": "lucianodileonardo",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ansible",
+    "aap",
+    "automation platform",
+    "red hat"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aap.login",
+        "title": "Log In",
+        "category": "AAP",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "aap.logout",
+        "title": "Log Out",
+        "category": "AAP",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "aap.createOrganization",
+        "title": "Create Organization",
+        "category": "AAP",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "aap.createCredentialType",
+        "title": "Create Credential Type",
+        "category": "AAP",
+        "icon": "$(key)"
+      },
+      {
+        "command": "aap.createCredential",
+        "title": "Create Credential",
+        "category": "AAP",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "aap.createInstanceGroup",
+        "title": "Create Instance Group",
+        "category": "AAP",
+        "icon": "$(server-environment)"
+      },
+      {
+        "command": "aap.createContainerGroup",
+        "title": "Create Container Group",
+        "category": "AAP",
+        "icon": "$(package)"
+      },
+      {
+        "command": "aap.createProject",
+        "title": "Create Project",
+        "category": "AAP",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "aap.createInventory",
+        "title": "Create Inventory",
+        "category": "AAP",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "aap.createInventorySource",
+        "title": "Create Inventory Source",
+        "category": "AAP",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "aap.createJobTemplate",
+        "title": "Create Job Template",
+        "category": "AAP",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "aap.workflowDesigner",
+        "title": "Workflow Designer",
+        "category": "AAP",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "aap.showConnection",
+        "title": "Show Connection",
+        "category": "AAP"
+      }
+    ],
+    "configuration": {
+      "title": "Ansible Automation Platform",
+      "properties": {
+        "aap.url": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Base URL of the AAP platform gateway, e.g. `https://aap.example.com`. Used as the default on login."
+        },
+        "aap.verifyTls": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Verify the TLS certificate of the AAP server. Disable only for lab installs with self-signed certificates."
+        },
+        "aap.requestTimeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Timeout for HTTP requests to AAP, in seconds."
+        },
+        "aap.vaultPasswordFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "File holding the Ansible Vault password used to encrypt secrets in generated playbooks (`~` and paths relative to the workspace are allowed). When empty, you are asked for the password each time."
+        },
+        "aap.vaultId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional vault ID label for encrypted values (e.g. `prod`). Run the playbook with `--vault-id <label>@prompt` or `--vault-id <label>@<password file>`."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run typecheck && npm run bundle",
+    "typecheck": "tsc -p ./ --noEmit",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node18 --external:vscode --outfile=out/extension.js --sourcemap",
+    "watch": "npm run bundle -- --watch",
+    "package": "vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  }
+}
