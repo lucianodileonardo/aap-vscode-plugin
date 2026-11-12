@@ -634,6 +634,7 @@
       h('h2', {}, wf.details.name || 'New workflow'),
       h('p', { class: 'sub' }, counts + (wf.details.organization ? ' · ' + wf.details.organization.name : '')),
       h('p', {}, 'Use ', h('b', {}, '+'), ' on START or on a node to add a step after it. Click a node to edit it, link it to another node or remove it; click a link to change when it runs.'),
+      h('p', {}, 'To make branches converge, use ', h('b', {}, '+'), ' on a node and choose ', h('b', {}, 'Existing node'), '.'),
       h('p', {}, 'Drag nodes to move them and the background to pan; scroll to zoom. ', h('kbd', {}, 'Del'), ' removes the selection, ', h('kbd', {}, 'Ctrl/Cmd+Z'), ' undoes a graph change, ', h('kbd', {}, 'Esc'), ' cancels.'),
       h('div', { class: 'actions' },
         h('button', { type: 'button', class: 'secondary', onclick: () => select({ kind: 'details' }) }, 'Workflow details'),
@@ -760,7 +761,7 @@
           h('p', { class: 'sub' }, KINDS[draft.kind].label + (draft.id ? ' · node #' + draft.id : ' · not saved yet')),
           h('div', { class: 'actions' },
             h('button', { type: 'button', class: 'secondary', onclick: () => addStep(draft.key) }, 'Add step after'),
-            h('button', { type: 'button', class: 'secondary', onclick: () => startLinking(draft.key) }, 'Link to…'),
+            h('button', { type: 'button', class: 'secondary', onclick: () => startLinking(draft.key) }, 'Link to existing node…'),
             h('button', { type: 'button', class: 'secondary danger', onclick: () => removeNode(draft.key) }, 'Remove')),
         ];
 
@@ -1030,24 +1031,81 @@
       option('any', 'Any — run when any parent link fires', !draft.allParentsMustConverge),
       option('all', 'All — run only when all parent links fire', draft.allParentsMustConverge));
 
+    // After a parent, the step can also be an existing node: that is how branches converge.
+    const linkable = isNew && parentKey ? wf.nodes.filter((n) => canLink(parentKey, n.key)) : [];
+    let useExisting = false;
+    const targetSelect = h('select', { id: 'n-target' }, option('', 'Select a node…'),
+      linkable.map((n) => option(n.key, nodeTitle(n) + ' — ' + KINDS[n.kind].label)));
+    const targetConvergence = h('select', { id: 'n-target-convergence' },
+      option('any', 'Any — run when any parent link fires', true),
+      option('all', 'All — run only when all parent links fire'));
+    targetSelect.addEventListener('change', () => {
+      const target = nodeByKey(targetSelect.value);
+      targetConvergence.value = target && target.allParentsMustConverge ? 'all' : 'any';
+    });
+    const submitButton = h('button', { type: 'submit' }, isNew ? 'Add step' : 'Apply');
+    const modeRow = linkable.length
+      ? field('Step', h('div', { class: 'radio-row', role: 'radiogroup' },
+          [['new', 'New node'], ['existing', 'Existing node']].map(([value, label]) =>
+            h('label', { class: 'check' }, h('input', {
+              type: 'radio', name: 'step-mode', value, checked: value === 'new',
+              onchange: () => setMode(value === 'existing'),
+            }), h('span', {}, label)))),
+        { hint: 'Pick an existing node to make branches converge on it.' })
+      : null;
+    const existingRows = [
+      field('Node', targetSelect, { id: 'target', required: true, hint: 'Nodes that would create a loop or are already linked are not listed.' }),
+      field('Convergence of that node', targetConvergence, { hint: 'All: it runs only after every parent link fires.' }),
+    ];
+
     const rows = [
+      modeRow,
       field('Node type', kindSelect, { id: 'kind' }),
       resourceBox,
       daysBox,
+      ...existingRows,
       runRow,
       field('Convergence', convergence, { hint: 'Matters for nodes with several parents.' }),
       field('Node alias', h('input', { id: 'n-alias', maxlength: 512, autocomplete: 'off', value: alias(draft), placeholder: 'Optional, e.g. deploy-web' }),
         { hint: 'Unique name of the node in this workflow (its identifier). Empty keeps a generated one.', id: 'identifier' }),
       promptsBox,
       h('div', { class: 'form-buttons' },
-        h('button', { type: 'submit' }, isNew ? 'Add step' : 'Apply'),
+        submitButton,
         h('button', { type: 'button', class: 'secondary', onclick: () => select(isNew ? null : { kind: 'node', key: draft.key }) }, isNew ? 'Cancel' : 'Revert')),
     ];
+    const newRows = rows.filter((r) => r && r !== modeRow && r !== runRow && !existingRows.includes(r) && !r.classList.contains('form-buttons'));
+    function setMode(existing) {
+      useExisting = existing;
+      for (const r of newRows) r.hidden = existing;
+      for (const r of existingRows) r.hidden = !existing;
+      submitButton.textContent = existing ? 'Add link' : 'Add step';
+      (existing ? targetSelect : kindSelect).focus();
+    }
+    for (const r of existingRows) r.hidden = true;
     form.append(...rows.filter(Boolean));
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       form.querySelectorAll('.field-error').forEach((el) => { el.hidden = true; });
       form.querySelectorAll('.invalid').forEach((el) => el.classList.remove('invalid'));
+      if (useExisting) {
+        const target = nodeByKey(targetSelect.value);
+        if (!target) {
+          fieldError(form, 'target', 'Choose the node to run.');
+          return;
+        }
+        remember();
+        const type = form.querySelector('input[name=run]:checked').value;
+        wf.links.push({ from: parentKey, to: target.key, type });
+        const all = targetConvergence.value === 'all';
+        if (target.allParentsMustConverge !== all) {
+          target.allParentsMustConverge = all;
+          target.dirty = true;
+        }
+        setDirty();
+        select({ kind: 'link', from: parentKey, to: target.key });
+        banner('', '');
+        return;
+      }
       const errors = readForm();
       if (errors.length) {
         for (const [id, message] of errors.reverse()) fieldError(form, id, message);

@@ -187,8 +187,12 @@ and keeps your unsaved changes.
   - Surveys are filled in with their defaults, and required answers are enforced.
   - Each node also has **convergence** (any/all parents) and an optional **node alias**.
   - Cleanup management jobs take *days of data to keep*.
-- **Links:** **Link to…** connects a node to another one. Click a link to change its type or
-  remove it. Links that would create a loop or repeat a pair are refused.
+- **Links:** **Link to existing node…** connects a node to another one. Click a link to change
+  its type or remove it. Links that would create a loop or repeat a pair are refused.
+- **Converging branches:** press **+** on a node, choose **Existing node**, pick the node all
+  branches should lead to, and choose when it runs (on success, on failure, always). You can also
+  set that node's convergence there: **Any** runs it when any parent link fires, **All** only when
+  all of them do.
 - **Removing a node** re-attaches its children to its parents, as in AAP. **Remove all** clears
   the graph.
 - **Canvas:** automatic left-to-right layout (long links route around nodes), drag to move

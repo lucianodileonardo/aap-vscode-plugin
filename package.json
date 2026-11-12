@@ -2,7 +2,7 @@
   "name": "aap-vscode",
   "displayName": "Ansible Automation Platform",
   "description": "Work with Red Hat Ansible Automation Platform 2.5 / 2.6 / 2.7 from VSCodium and VS Code.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "lucianodileonardo",
   "license": "MIT",
   "icon": "media/icon.png",
