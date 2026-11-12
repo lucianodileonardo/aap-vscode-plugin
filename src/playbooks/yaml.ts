@@ -186,3 +186,31 @@ ${indentedData}
 ${roles}
 `;
 }
+
+/** The object being written to the playbook: new, or loaded from AAP and edited (maybe renamed). */
+export interface PlaybookTarget {
+  /** The `name` (and `new_name` when renamed) keys of the item. */
+  nameKeys: { name: string; new_name?: string };
+  /** Start of the header title, e.g. 'Creates the "web" project'. */
+  title: string;
+  /** Header notes about the rename, if any. */
+  notes: string[];
+}
+
+/** Describes how a playbook should name the object; `existing` is set when an AAP object is edited. */
+export function playbookTarget(noun: string, name: string, existing?: { name: string }): PlaybookTarget {
+  if (!existing) {
+    return { nameKeys: { name }, title: `Creates the "${name}" ${noun}`, notes: [] };
+  }
+  if (existing.name === name) {
+    return { nameKeys: { name }, title: `Creates or updates the "${name}" ${noun}`, notes: [] };
+  }
+  return {
+    nameKeys: { name: existing.name, new_name: name },
+    title: `Renames the "${existing.name}" ${noun} to "${name}" and updates it`,
+    notes: [
+      `Renames "${existing.name}" to "${name}" (name / new_name). Once it has run, set name to the`,
+      'new name and remove new_name, so that later runs find the renamed object.',
+    ],
+  };
+}

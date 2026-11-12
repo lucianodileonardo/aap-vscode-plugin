@@ -1,6 +1,7 @@
 import { InstanceGroupInput } from '../aapClient';
 import { instanceGroupPlaybook } from '../playbooks/instanceGroup';
 import { FieldErrors, FormField, ResourceFormSpec } from '../views/resourceFormPanel';
+import { text } from './existing';
 import { parseInteger, parseList, parseMapping } from './parse';
 import { credentialLookup, instancesLookup } from './lookups';
 
@@ -73,6 +74,24 @@ export const instanceGroupForm: ResourceFormSpec<InstanceGroupInput> = {
   },
   create: (client, group) => client.createInstanceGroup(group),
   playbook: instanceGroupPlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/instance_groups/',
+    query: 'is_container_group=false',
+    async read(client, id) {
+      const group = await client.get<Record<string, unknown>>(`api/controller/v2/instance_groups/${id}/`);
+      return {
+        values: {
+          name: text(group.name),
+          policy_instance_minimum: text(group.policy_instance_minimum),
+          policy_instance_percentage: text(group.policy_instance_percentage),
+          policy_instance_list: ((group.policy_instance_list as string[] | undefined) ?? []).join('\n'),
+          max_concurrent_jobs: text(group.max_concurrent_jobs),
+          max_forks: text(group.max_forks),
+        },
+      };
+    },
+    update: (client, existing, group) => client.updateInstanceGroup(existing.id, group),
+  },
 };
 
 export const containerGroupForm: ResourceFormSpec<InstanceGroupInput> = {
@@ -116,6 +135,23 @@ export const containerGroupForm: ResourceFormSpec<InstanceGroupInput> = {
   },
   create: (client, group) => client.createInstanceGroup(group),
   playbook: instanceGroupPlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/instance_groups/',
+    query: 'is_container_group=true',
+    async read(client, id) {
+      const group = await client.get<Record<string, unknown>>(`api/controller/v2/instance_groups/${id}/`);
+      return {
+        values: {
+          name: text(group.name),
+          credential: await client.controllerName('credentials', group.credential as number | null),
+          pod_spec_override: text(group.pod_spec_override),
+          max_concurrent_jobs: text(group.max_concurrent_jobs),
+          max_forks: text(group.max_forks),
+        },
+      };
+    },
+    update: (client, existing, group) => client.updateInstanceGroup(existing.id, group),
+  },
 };
 
 function requiredName(values: Record<string, string>, fieldErrors: FieldErrors): string {

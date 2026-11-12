@@ -142,6 +142,29 @@ Text typed before going online is preselected (unknown names are kept, marked "n
 AAP"); turning Online Mode off copies the picked values back into the text boxes. Lists reload
 when you switch account, and online forms drop back to text boxes when you log out.
 
+### Editing existing objects (all forms)
+With **Online Mode** on, every form (except the workflow designer, which edits workflows its own
+way) also offers **Edit an existing …**: pick the object (for organization-owned objects, first
+choose the organization, or keep *All organizations*) and click **Load**. The form is filled with
+the object's current settings and switches to edit mode (an **EDIT** badge with the name and ID;
+**New …** goes back to creating).
+
+- **Use AAP API** then *updates* the object (`PATCH`) instead of creating one. Changing the name
+  renames it. Related lists are made to match the form: job template credentials change only by
+  the difference; instance groups and constructed inventory inputs keep the form's order.
+- **Generate Playbook** writes the edited settings. If you renamed the object, the item has
+  `name: <old name>` and `new_name: <new name>`. After the first run, set `name` to the new name
+  and remove `new_name`.
+- **Credentials:** AAP never returns stored secrets, so they show as `$encrypted$`. Leave them like
+  that to keep the stored value, both through the API and in the playbook (the playbook header
+  lists them), or type a new value to replace them.
+- **Fixed settings:** the type of an inventory cannot change once it exists, so it is locked
+  while editing.
+- **What can be loaded:** built-in credential types cannot be edited, so they are not listed.
+  Neither are the sources AAP creates for constructed inventories: edit the inventory instead.
+- **Switching login** (another server or account) ends edit mode, since the object belongs to the
+  other login.
+
 ### Workflow designer
 **AAP: Workflow Designer** (also in the status bar menu) is a visual editor for workflow job
 templates that works connected to AAP, like the platform's own workflow visualizer. It uses the

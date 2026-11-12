@@ -1,13 +1,19 @@
 import { InventorySourceInput } from '../aapClient';
 import { AapSession } from '../auth';
-import { configurationPlaybook, toYaml } from './yaml';
+import { configurationPlaybook, playbookTarget, toYaml } from './yaml';
 
 /** Builds a playbook that creates the inventory source with infra.aap_configuration.controller_inventory_sources. */
-export function inventorySourcePlaybook(source: InventorySourceInput, session: AapSession | undefined, verifyTls: boolean): string {
+export function inventorySourcePlaybook(
+  source: InventorySourceInput,
+  session: AapSession | undefined,
+  verifyTls: boolean,
+  existing?: { name: string },
+): string {
+  const target = playbookTarget('inventory source', source.name, existing);
   // Optional settings are only written when set, so the playbook mirrors what was entered.
   const optional = (key: string, value: unknown, isSet: boolean) => (isSet ? { [key]: value } : {});
   const item = {
-    name: source.name,
+    ...target.nameKeys,
     description: source.description,
     inventory: source.inventory,
     source: source.source,
@@ -31,7 +37,8 @@ export function inventorySourcePlaybook(source: InventorySourceInput, session: A
     state: 'present',
   };
   return configurationPlaybook({
-    title: `Creates the "${source.name}" inventory source in Ansible Automation Platform.`,
+    title: `${target.title} in Ansible Automation Platform.`,
+    notes: target.notes,
     playName: 'Create AAP inventory source',
     role: 'controller_inventory_sources',
     data: toYaml({ controller_inventory_sources: [item] }),

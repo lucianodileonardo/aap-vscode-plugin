@@ -1,3 +1,4 @@
+import { text, variablesText } from './existing';
 import { JOB_TEMPLATE_PROMPTS, JOB_TYPES, JobTemplateInput, JobTemplatePrompt } from '../aapClient';
 import { jobTemplatePlaybook } from '../playbooks/jobTemplate';
 import { FieldErrors, ResourceFormSpec } from '../views/resourceFormPanel';
@@ -169,4 +170,35 @@ export const jobTemplateForm: ResourceFormSpec<JobTemplateInput> = {
   },
   create: (client, template) => client.createJobTemplate(template),
   playbook: jobTemplatePlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/job_templates/',
+    organizationFilter: 'organization',
+    async read(client, id) {
+      const template = await client.get<Record<string, unknown>>(`api/controller/v2/job_templates/${id}/`);
+      const [inventory, project, executionEnvironment, credentials, instanceGroups] = await Promise.all([
+        client.controllerName('inventories', template.inventory as number | null),
+        client.controllerName('projects', template.project as number | null),
+        client.controllerName('execution_environments', template.execution_environment as number | null),
+        client.relatedNames(`job_templates/${id}/credentials/`),
+        client.relatedNames(`job_templates/${id}/instance_groups/`),
+      ]);
+      const values: Record<string, string> = {
+        inventory,
+        project,
+        execution_environment: executionEnvironment,
+        credentials: credentials.join('\n'),
+        instance_groups: instanceGroups.join('\n'),
+        extra_vars: variablesText(template.extra_vars),
+        prompt_on_launch: JOB_TEMPLATE_PROMPTS.filter((prompt) => template[`ask_${prompt}_on_launch`] === true).join(','),
+      };
+      for (const key of [
+        'name', 'description', 'job_type', 'playbook', 'limit', 'scm_branch', 'job_tags', 'skip_tags', 'verbosity', 'forks',
+        'job_slice_count', 'timeout', 'become_enabled', 'diff_mode', 'use_fact_cache', 'allow_simultaneous', 'prevent_instance_group_fallback',
+      ]) {
+        values[key] = text(template[key]);
+      }
+      return { values };
+    },
+    update: (client, existing, template) => client.updateJobTemplate(existing.id, template),
+  },
 };

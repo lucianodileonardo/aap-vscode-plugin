@@ -1,13 +1,19 @@
 import { JobTemplateInput } from '../aapClient';
 import { AapSession } from '../auth';
-import { configurationPlaybook, toYaml } from './yaml';
+import { configurationPlaybook, playbookTarget, toYaml } from './yaml';
 
 /** Builds a playbook that creates the job template with infra.aap_configuration.controller_job_templates. */
-export function jobTemplatePlaybook(template: JobTemplateInput, session: AapSession | undefined, verifyTls: boolean): string {
+export function jobTemplatePlaybook(
+  template: JobTemplateInput,
+  session: AapSession | undefined,
+  verifyTls: boolean,
+  existing?: { name: string },
+): string {
+  const target = playbookTarget('job template', template.name, existing);
   // Optional settings are only written when set, so the playbook mirrors what was entered.
   const optional = (key: string, value: unknown, isSet: boolean) => (isSet ? { [key]: value } : {});
   const item = {
-    name: template.name,
+    ...target.nameKeys,
     description: template.description,
     job_type: template.jobType,
     ...optional('inventory', template.inventory, !!template.inventory),
@@ -34,7 +40,8 @@ export function jobTemplatePlaybook(template: JobTemplateInput, session: AapSess
     state: 'present',
   };
   return configurationPlaybook({
-    title: `Creates the "${template.name}" job template in Ansible Automation Platform.`,
+    title: `${target.title} in Ansible Automation Platform.`,
+    notes: target.notes,
     playName: 'Create AAP job template',
     role: 'controller_job_templates',
     data: toYaml({ controller_templates: [item] }),

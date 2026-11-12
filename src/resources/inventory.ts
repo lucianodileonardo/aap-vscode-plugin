@@ -2,6 +2,7 @@ import { INVENTORY_KINDS, InventoryInput, InventoryKind } from '../aapClient';
 import { inventoryPlaybook } from '../playbooks/inventory';
 import { FieldErrors, ResourceFormSpec } from '../views/resourceFormPanel';
 import { inputInventoriesLookup, instanceGroupsLookup, organizationLookup } from './lookups';
+import { text, variablesText } from './existing';
 import { parseInteger, parseList, parseMapping } from './parse';
 
 const CONSTRUCTED_EXAMPLE = `plugin: ansible.builtin.constructed
@@ -160,4 +161,41 @@ export const inventoryForm: ResourceFormSpec<InventoryInput> = {
   },
   create: (client, inventory) => client.createInventory(inventory),
   playbook: inventoryPlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/inventories/',
+    organizationFilter: 'organization',
+    lockedFields: ['kind'],
+    async read(client, id) {
+      const inventory = await client.get<Record<string, unknown>>(`api/controller/v2/inventories/${id}/`);
+      const constructed = inventory.kind === 'constructed';
+      const [organization, instanceGroups, details, inputs, sources] = await Promise.all([
+        client.controllerName('organizations', inventory.organization as number | null),
+        client.relatedNames(`inventories/${id}/instance_groups/`),
+        constructed ? client.get<Record<string, unknown>>(`api/controller/v2/constructed_inventories/${id}/`) : undefined,
+        constructed ? client.relatedNames(`inventories/${id}/input_inventories/`) : [],
+        constructed ? client.relatedNames(`inventories/${id}/inventory_sources/`) : [],
+      ]);
+      const values: Record<string, string> = {
+        name: text(inventory.name),
+        description: text(inventory.description),
+        organization,
+        kind: text(inventory.kind),
+        host_filter: text(inventory.host_filter),
+        instance_groups: instanceGroups.join('\n'),
+        prevent_instance_group_fallback: text(inventory.prevent_instance_group_fallback),
+        variables: variablesText(inventory.variables),
+      };
+      if (details) {
+        Object.assign(values, {
+          input_inventories: inputs.join('\n'),
+          source_vars: variablesText(details.source_vars),
+          limit: text(details.limit),
+          update_cache_timeout: text(details.update_cache_timeout),
+          verbosity: text(details.verbosity),
+        });
+      }
+      return { values, ...(sources.length ? { extra: { sourceName: sources[0] } } : {}) };
+    },
+    update: (client, existing, inventory) => client.updateInventory(existing.id, inventory),
+  },
 };

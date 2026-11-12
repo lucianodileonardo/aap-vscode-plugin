@@ -1,19 +1,22 @@
 import { OrganizationInput } from '../aapClient';
 import { AapSession } from '../auth';
-import { configurationPlaybook, toYaml } from './yaml';
+import { configurationPlaybook, playbookTarget, toYaml } from './yaml';
 
 /** Builds a playbook that creates the organization with infra.aap_configuration.gateway_organizations. */
 export function organizationPlaybook(
   org: OrganizationInput,
   session: AapSession | undefined,
   verifyTls: boolean,
+  existing?: { name: string },
 ): string {
+  const target = playbookTarget('organization', org.name, existing);
   return configurationPlaybook({
-    title: `Creates the "${org.name}" organization in Ansible Automation Platform.`,
+    title: `${target.title} in Ansible Automation Platform.`,
+    notes: target.notes,
     playName: 'Create AAP organization',
     role: 'gateway_organizations',
     data: toYaml({
-      aap_organizations: [{ name: org.name, description: org.description ?? '', state: 'present' }],
+      aap_organizations: [{ ...target.nameKeys, description: org.description ?? '', state: 'present' }],
     }),
     session,
     verifyTls,

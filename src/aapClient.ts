@@ -277,6 +277,19 @@ export interface InventorySourceInput {
   timeout: number;
 }
 
+/** An object loaded from AAP into a form to be edited (and possibly renamed). */
+export interface ExistingObject {
+  id: number;
+  /** Its name in AAP when it was loaded; a different name in the form renames it. */
+  name: string;
+  /** Resource-specific facts, e.g. the name of a constructed inventory's source. */
+  extra?: Record<string, string>;
+}
+
+function organizationBody(input: OrganizationInput) {
+  return { name: input.name, description: input.description ?? '' };
+}
+
 export class AapHttpError extends Error {
   constructor(
     readonly status: number,
@@ -388,9 +401,17 @@ export class AapClient {
     return user;
   }
 
+  // ---- Create and update ----
+  // Each resource has a create (POST) and an update (PATCH of an existing object, which may also
+  // rename it); both send the same body, built by a *Body method that resolves names to IDs first.
+
   /** Creates an organization in the platform gateway; it is synced to controller, EDA and hub. */
   createOrganization(input: OrganizationInput): Promise<Organization> {
-    return this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: input });
+    return this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: organizationBody(input) });
+  }
+
+  updateOrganization(id: number, input: OrganizationInput): Promise<Organization> {
+    return this.request<Organization>('PATCH', `api/gateway/v1/organizations/${id}/`, { body: organizationBody(input) });
   }
 
   /** Creates a custom credential type in automation controller (reached through the gateway). */
@@ -398,39 +419,59 @@ export class AapClient {
     return this.request<CredentialType>('POST', 'api/controller/v2/credential_types/', { body: input });
   }
 
+  updateCredentialType(id: number, input: CredentialTypeInput): Promise<CredentialType> {
+    return this.request<CredentialType>('PATCH', `api/controller/v2/credential_types/${id}/`, { body: input });
+  }
+
   /**
    * Creates a credential in automation controller. The organization and credential type names
    * are resolved to IDs first; an unknown name fails with a 400-style field error.
    */
   async createCredential(input: CredentialInput): Promise<Credential> {
+    return this.request<Credential>('POST', 'api/controller/v2/credentials/', { body: await this.credentialBody(input) });
+  }
+
+  /** Updates a credential; inputs left as "$encrypted$" keep their stored secret value. */
+  async updateCredential(id: number, input: CredentialInput): Promise<Credential> {
+    return this.request<Credential>('PATCH', `api/controller/v2/credentials/${id}/`, { body: await this.credentialBody(input) });
+  }
+
+  private async credentialBody(input: CredentialInput) {
     const [organization, credentialType] = await Promise.all([
       this.findControllerId('organizations', input.organization, 'organization'),
       this.findControllerId('credential_types', input.credentialType, 'credential_type'),
     ]);
-    return this.request<Credential>('POST', 'api/controller/v2/credentials/', {
-      body: {
-        name: input.name,
-        description: input.description ?? '',
-        organization,
-        credential_type: credentialType,
-        inputs: input.inputs,
-      },
-    });
+    return {
+      name: input.name,
+      description: input.description ?? '',
+      organization,
+      credential_type: credentialType,
+      inputs: input.inputs,
+    };
   }
 
   /** Creates an instance group or container group in automation controller. */
   async createInstanceGroup(input: InstanceGroupInput): Promise<InstanceGroup> {
+    return this.request<InstanceGroup>('POST', 'api/controller/v2/instance_groups/', { body: await this.instanceGroupBody(input, false) });
+  }
+
+  async updateInstanceGroup(id: number, input: InstanceGroupInput): Promise<InstanceGroup> {
+    return this.request<InstanceGroup>('PATCH', `api/controller/v2/instance_groups/${id}/`, { body: await this.instanceGroupBody(input, true) });
+  }
+
+  private async instanceGroupBody(input: InstanceGroupInput, update: boolean) {
     const common = {
       name: input.name,
       max_concurrent_jobs: input.maxConcurrentJobs,
       max_forks: input.maxForks,
     };
-    const body = input.isContainerGroup
+    return input.isContainerGroup
       ? {
           ...common,
           is_container_group: true,
           credential: input.credential ? await this.findControllerId('credentials', input.credential, 'credential') : null,
-          ...(input.podSpecOverride ? { pod_spec_override: input.podSpecOverride } : {}),
+          // An empty override means the default pod spec; on update it clears a previous override.
+          ...(input.podSpecOverride || update ? { pod_spec_override: input.podSpecOverride } : {}),
         }
       : {
           ...common,
@@ -438,11 +479,18 @@ export class AapClient {
           policy_instance_percentage: input.policyInstancePercentage,
           policy_instance_list: input.policyInstanceList,
         };
-    return this.request<InstanceGroup>('POST', 'api/controller/v2/instance_groups/', { body });
   }
 
   /** Creates a project in automation controller; names are resolved to IDs first. */
   async createProject(input: ProjectInput): Promise<Project> {
+    return this.request<Project>('POST', 'api/controller/v2/projects/', { body: await this.projectBody(input) });
+  }
+
+  async updateProject(id: number, input: ProjectInput): Promise<Project> {
+    return this.request<Project>('PATCH', `api/controller/v2/projects/${id}/`, { body: await this.projectBody(input) });
+  }
+
+  private async projectBody(input: ProjectInput) {
     const [organization, credential, defaultEnvironment] = await Promise.all([
       this.findControllerId('organizations', input.organization, 'organization'),
       input.credential ? this.findControllerId('credentials', input.credential, 'credential') : null,
@@ -450,27 +498,25 @@ export class AapClient {
         ? this.findControllerId('execution_environments', input.defaultEnvironment, 'default_environment')
         : null,
     ]);
-    return this.request<Project>('POST', 'api/controller/v2/projects/', {
-      body: {
-        name: input.name,
-        description: input.description,
-        organization,
-        scm_type: input.scmType,
-        scm_url: input.scmUrl,
-        scm_branch: input.scmBranch,
-        scm_refspec: input.scmRefspec,
-        credential,
-        ...(input.scmType === '' ? { local_path: input.localPath } : {}),
-        scm_clean: input.scmClean,
-        scm_delete_on_update: input.scmDeleteOnUpdate,
-        scm_track_submodules: input.scmTrackSubmodules,
-        scm_update_on_launch: input.scmUpdateOnLaunch,
-        scm_update_cache_timeout: input.scmUpdateCacheTimeout,
-        allow_override: input.allowOverride,
-        default_environment: defaultEnvironment,
-        timeout: input.timeout,
-      },
-    });
+    return {
+      name: input.name,
+      description: input.description,
+      organization,
+      scm_type: input.scmType,
+      scm_url: input.scmUrl,
+      scm_branch: input.scmBranch,
+      scm_refspec: input.scmRefspec,
+      credential,
+      ...(input.scmType === '' ? { local_path: input.localPath } : {}),
+      scm_clean: input.scmClean,
+      scm_delete_on_update: input.scmDeleteOnUpdate,
+      scm_track_submodules: input.scmTrackSubmodules,
+      scm_update_on_launch: input.scmUpdateOnLaunch,
+      scm_update_cache_timeout: input.scmUpdateCacheTimeout,
+      allow_override: input.allowOverride,
+      default_environment: defaultEnvironment,
+      timeout: input.timeout,
+    };
   }
 
   /**
@@ -478,6 +524,25 @@ export class AapClient {
    * (in the given order). All names are resolved before anything is created.
    */
   async createJobTemplate(input: JobTemplateInput): Promise<JobTemplate> {
+    const { body, credentials, instanceGroups } = await this.jobTemplateBody(input);
+    const template = await this.request<JobTemplate>('POST', 'api/controller/v2/job_templates/', { body });
+    await this.afterCreate(`Job template "${template.name}" (id ${template.id})`, 'credentials or instance groups', async () => {
+      await this.syncRelated(`job_templates/${template.id}/credentials/`, [], credentials, false);
+      await this.syncRelated(`job_templates/${template.id}/instance_groups/`, [], instanceGroups, true);
+    });
+    return template;
+  }
+
+  /** Updates a job template; its credentials and instance groups are made to match the input. */
+  async updateJobTemplate(id: number, input: JobTemplateInput): Promise<JobTemplate> {
+    const { body, credentials, instanceGroups } = await this.jobTemplateBody(input);
+    const template = await this.request<JobTemplate>('PATCH', `api/controller/v2/job_templates/${id}/`, { body });
+    await this.syncRelated(`job_templates/${id}/credentials/`, await this.relatedIds(`job_templates/${id}/credentials/`), credentials, false);
+    await this.syncRelated(`job_templates/${id}/instance_groups/`, await this.relatedIds(`job_templates/${id}/instance_groups/`), instanceGroups, true);
+    return template;
+  }
+
+  private async jobTemplateBody(input: JobTemplateInput) {
     const lookupAll = (endpoint: string, names: string[], field: string) =>
       Promise.all(names.map((name) => this.findControllerId(endpoint, name, field)));
     const [inventory, project, executionEnvironment, credentials, instanceGroups] = await Promise.all([
@@ -492,47 +557,31 @@ export class AapClient {
     const prompts = Object.fromEntries(
       JOB_TEMPLATE_PROMPTS.map((prompt) => [`ask_${prompt}_on_launch`, input.promptOnLaunch.includes(prompt)]),
     );
-    const template = await this.request<JobTemplate>('POST', 'api/controller/v2/job_templates/', {
-      body: {
-        name: input.name,
-        description: input.description,
-        job_type: input.jobType,
-        inventory,
-        project,
-        playbook: input.playbook,
-        execution_environment: executionEnvironment,
-        extra_vars: input.extraVarsText,
-        limit: input.limit,
-        scm_branch: input.scmBranch,
-        job_tags: input.jobTags,
-        skip_tags: input.skipTags,
-        forks: input.forks,
-        verbosity: input.verbosity,
-        timeout: input.timeout,
-        job_slice_count: input.jobSliceCount,
-        become_enabled: input.becomeEnabled,
-        diff_mode: input.diffMode,
-        use_fact_cache: input.useFactCache,
-        allow_simultaneous: input.allowSimultaneous,
-        prevent_instance_group_fallback: input.preventInstanceGroupFallback,
-        ...prompts,
-      },
-    });
-    // Sequential, so the instance group order (which sets preference) is kept.
-    try {
-      for (const id of credentials) {
-        await this.request('POST', `api/controller/v2/job_templates/${template.id}/credentials/`, { body: { id } });
-      }
-      for (const id of instanceGroups) {
-        await this.request('POST', `api/controller/v2/job_templates/${template.id}/instance_groups/`, { body: { id } });
-      }
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Job template "${template.name}" (id ${template.id}) was created, but attaching its credentials or instance groups failed: ${reason}`,
-      );
-    }
-    return template;
+    const body = {
+      name: input.name,
+      description: input.description,
+      job_type: input.jobType,
+      inventory,
+      project,
+      playbook: input.playbook,
+      execution_environment: executionEnvironment,
+      extra_vars: input.extraVarsText,
+      limit: input.limit,
+      scm_branch: input.scmBranch,
+      job_tags: input.jobTags,
+      skip_tags: input.skipTags,
+      forks: input.forks,
+      verbosity: input.verbosity,
+      timeout: input.timeout,
+      job_slice_count: input.jobSliceCount,
+      become_enabled: input.becomeEnabled,
+      diff_mode: input.diffMode,
+      use_fact_cache: input.useFactCache,
+      allow_simultaneous: input.allowSimultaneous,
+      prevent_instance_group_fallback: input.preventInstanceGroupFallback,
+      ...prompts,
+    };
+    return { body, credentials, instanceGroups };
   }
 
   /**
@@ -541,6 +590,35 @@ export class AapClient {
    * inventories and instance groups are then attached in the given order.
    */
   async createInventory(input: InventoryInput): Promise<Inventory> {
+    const { body, inputInventories, instanceGroups } = await this.inventoryBody(input);
+    const endpoint = input.kind === 'constructed' ? 'constructed_inventories' : 'inventories';
+    const inventory = await this.request<Inventory>('POST', `api/controller/v2/${endpoint}/`, {
+      body: { ...body, ...(input.kind === 'constructed' ? {} : { kind: input.kind }) },
+    });
+    await this.afterCreate(`Inventory "${inventory.name}" (id ${inventory.id})`, 'input inventories or instance groups', async () => {
+      await this.syncRelated(`inventories/${inventory.id}/input_inventories/`, [], inputInventories, true);
+      await this.syncRelated(`inventories/${inventory.id}/instance_groups/`, [], instanceGroups, true);
+    });
+    return inventory;
+  }
+
+  /**
+   * Updates an inventory (its type cannot change); input inventories and instance groups are made
+   * to match the input, in order.
+   */
+  async updateInventory(id: number, input: InventoryInput): Promise<Inventory> {
+    const { body, inputInventories, instanceGroups } = await this.inventoryBody(input);
+    const constructed = input.kind === 'constructed';
+    const inventory = await this.request<Inventory>('PATCH', `api/controller/v2/${constructed ? 'constructed_inventories' : 'inventories'}/${id}/`, { body });
+    if (constructed) {
+      const current = await this.relatedIds(`inventories/${id}/input_inventories/`);
+      await this.syncRelated(`inventories/${id}/input_inventories/`, current, inputInventories, true);
+    }
+    await this.syncRelated(`inventories/${id}/instance_groups/`, await this.relatedIds(`inventories/${id}/instance_groups/`), instanceGroups, true);
+    return inventory;
+  }
+
+  private async inventoryBody(input: InventoryInput) {
     const lookupAll = (endpoint: string, names: string[], field: string) =>
       Promise.all(names.map((name) => this.findControllerId(endpoint, name, field)));
     const constructed = input.kind === 'constructed';
@@ -549,45 +627,30 @@ export class AapClient {
       constructed ? lookupAll('inventories', input.inputInventories, 'input_inventories') : [],
       lookupAll('instance_groups', input.instanceGroups, 'instance_groups'),
     ]);
-    const common = {
+    const body = {
       name: input.name,
       description: input.description,
       organization,
       variables: input.variablesText,
       prevent_instance_group_fallback: input.preventInstanceGroupFallback,
+      ...(constructed
+        ? { source_vars: input.sourceVarsText, limit: input.limit, update_cache_timeout: input.updateCacheTimeout, verbosity: input.verbosity }
+        : {}),
+      ...(input.kind === 'smart' ? { host_filter: input.hostFilter } : {}),
     };
-    const inventory = constructed
-      ? await this.request<Inventory>('POST', 'api/controller/v2/constructed_inventories/', {
-          body: {
-            ...common,
-            source_vars: input.sourceVarsText,
-            limit: input.limit,
-            update_cache_timeout: input.updateCacheTimeout,
-            verbosity: input.verbosity,
-          },
-        })
-      : await this.request<Inventory>('POST', 'api/controller/v2/inventories/', {
-          body: { ...common, kind: input.kind, ...(input.kind === 'smart' ? { host_filter: input.hostFilter } : {}) },
-        });
-    // Sequential, so the order (which matters for both) is kept.
-    try {
-      for (const id of inputInventories) {
-        await this.request('POST', `api/controller/v2/inventories/${inventory.id}/input_inventories/`, { body: { id } });
-      }
-      for (const id of instanceGroups) {
-        await this.request('POST', `api/controller/v2/inventories/${inventory.id}/instance_groups/`, { body: { id } });
-      }
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Inventory "${inventory.name}" (id ${inventory.id}) was created, but attaching its input inventories or instance groups failed: ${reason}`,
-      );
-    }
-    return inventory;
+    return { body, inputInventories, instanceGroups };
   }
 
   /** Creates an inventory source in automation controller; names are resolved to IDs first. */
   async createInventorySource(input: InventorySourceInput): Promise<InventorySource> {
+    return this.request<InventorySource>('POST', 'api/controller/v2/inventory_sources/', { body: await this.inventorySourceBody(input) });
+  }
+
+  async updateInventorySource(id: number, input: InventorySourceInput): Promise<InventorySource> {
+    return this.request<InventorySource>('PATCH', `api/controller/v2/inventory_sources/${id}/`, { body: await this.inventorySourceBody(input) });
+  }
+
+  private async inventorySourceBody(input: InventorySourceInput) {
     const scm = input.source === 'scm';
     const [inventory, sourceProject, credential, executionEnvironment] = await Promise.all([
       this.findControllerId('inventories', input.inventory, 'inventory'),
@@ -597,28 +660,84 @@ export class AapClient {
         ? this.findControllerId('execution_environments', input.executionEnvironment, 'execution_environment')
         : null,
     ]);
-    return this.request<InventorySource>('POST', 'api/controller/v2/inventory_sources/', {
-      body: {
-        name: input.name,
-        description: input.description,
-        inventory,
-        source: input.source,
-        ...(scm ? { source_project: sourceProject, source_path: input.sourcePath, scm_branch: input.scmBranch } : {}),
-        credential,
-        execution_environment: executionEnvironment,
-        source_vars: input.sourceVarsText,
-        verbosity: input.verbosity,
-        host_filter: input.hostFilter,
-        enabled_var: input.enabledVar,
-        enabled_value: input.enabledValue,
-        limit: input.limit,
-        overwrite: input.overwrite,
-        overwrite_vars: input.overwriteVars,
-        update_on_launch: input.updateOnLaunch,
-        update_cache_timeout: input.updateCacheTimeout,
-        timeout: input.timeout,
-      },
-    });
+    return {
+      name: input.name,
+      description: input.description,
+      inventory,
+      source: input.source,
+      ...(scm ? { source_project: sourceProject, source_path: input.sourcePath, scm_branch: input.scmBranch } : {}),
+      credential,
+      execution_environment: executionEnvironment,
+      source_vars: input.sourceVarsText,
+      verbosity: input.verbosity,
+      host_filter: input.hostFilter,
+      enabled_var: input.enabledVar,
+      enabled_value: input.enabledValue,
+      limit: input.limit,
+      overwrite: input.overwrite,
+      overwrite_vars: input.overwriteVars,
+      update_on_launch: input.updateOnLaunch,
+      update_cache_timeout: input.updateCacheTimeout,
+      timeout: input.timeout,
+    };
+  }
+
+  // ---- Related lists (credentials, instance groups, input inventories) ----
+
+  /** IDs in a related list, in the order AAP keeps them (which is the preference order for instance groups). */
+  async relatedIds(path: string): Promise<number[]> {
+    return (await this.listAll<{ id: number }>(`api/controller/v2/${path}`)).map((item) => item.id);
+  }
+
+  /** Names in a related list, in AAP's order. */
+  async relatedNames(path: string): Promise<string[]> {
+    return (await this.listAll<{ name: string }>(`api/controller/v2/${path}`)).map((item) => item.name);
+  }
+
+  /**
+   * Makes a related list hold `wanted`. Unordered lists only change the difference; for ordered ones
+   * a different order means detaching everything and attaching again in order (AAP keeps attach order).
+   * Removals go first, so e.g. a credential can be swapped for another of the same type.
+   */
+  private async syncRelated(path: string, current: number[], wanted: number[], ordered: boolean): Promise<void> {
+    const url = `api/controller/v2/${path}`;
+    const same = current.length === wanted.length && current.every((id, i) => (ordered ? wanted[i] === id : wanted.includes(id)));
+    if (same) {
+      return;
+    }
+    const remove = ordered ? current : current.filter((id) => !wanted.includes(id));
+    const add = ordered ? wanted : wanted.filter((id) => !current.includes(id));
+    for (const id of remove) {
+      await this.request('POST', url, { body: { id, disassociate: true } });
+    }
+    for (const id of add) {
+      await this.request('POST', url, { body: { id } });
+    }
+  }
+
+  /** Runs the attach step after a create; a failure there says the object itself was created. */
+  private async afterCreate(what: string, related: string, attach: () => Promise<void>): Promise<void> {
+    try {
+      await attach();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`${what} was created, but attaching its ${related} failed: ${reason}`);
+    }
+  }
+
+  // ---- Reading existing objects ----
+
+  /** Reads one object, e.g. get('api/controller/v2/projects/5/'). */
+  get<T>(path: string): Promise<T> {
+    return this.request<T>('GET', path);
+  }
+
+  /** Name of a controller object by ID ('' for null), e.g. a project's credential. */
+  async controllerName(endpoint: string, id: number | null | undefined): Promise<string> {
+    if (id === null || id === undefined) {
+      return '';
+    }
+    return (await this.get<{ name: string }>(`api/controller/v2/${endpoint}/${id}/`)).name;
   }
 
   /** Fetches every item of a paginated list endpoint, following `next` links (up to 10,000 items). */

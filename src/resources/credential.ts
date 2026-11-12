@@ -2,6 +2,7 @@ import { CredentialInput } from '../aapClient';
 import { credentialPlaybook } from '../playbooks/credential';
 import { getVaultSecret } from '../vaultPassword';
 import { FieldErrors, ResourceFormSpec } from '../views/resourceFormPanel';
+import { text, yamlText } from './existing';
 import { parseMapping } from './parse';
 import { credentialTypeLookup, organizationLookup } from './lookups';
 
@@ -35,7 +36,7 @@ export const credentialForm: ResourceFormSpec<CredentialInput> = {
       id: 'inputs',
       label: 'Inputs',
       type: 'code',
-      hint: 'YAML or JSON mapping of the credential type\'s input fields. String values are encrypted with Ansible Vault in the generated playbook.',
+      hint: 'YAML or JSON mapping of the credential type\'s input fields. String values are encrypted with Ansible Vault in the generated playbook. In a loaded credential, secrets show as "$encrypted$": leave them to keep the stored value.',
       placeholder: INPUTS_EXAMPLE,
     },
   ],
@@ -62,8 +63,29 @@ export const credentialForm: ResourceFormSpec<CredentialInput> = {
     return { value: { name, description: values.description.trim(), organization, credentialType, inputs } };
   },
   create: (client, credential) => client.createCredential(credential),
-  async playbook(credential, session, verifyTls) {
+  async playbook(credential, session, verifyTls, existing) {
     const vault = await getVaultSecret();
-    return vault && credentialPlaybook(credential, session, verifyTls, vault);
+    return vault && credentialPlaybook(credential, session, verifyTls, vault, existing);
+  },
+  existing: {
+    endpoint: 'api/controller/v2/credentials/',
+    organizationFilter: 'organization',
+    async read(client, id) {
+      const credential = await client.get<Record<string, unknown>>(`api/controller/v2/credentials/${id}/`);
+      const [organization, credentialType] = await Promise.all([
+        client.controllerName('organizations', credential.organization as number | null),
+        client.controllerName('credential_types', credential.credential_type as number),
+      ]);
+      return {
+        values: {
+          name: text(credential.name),
+          description: text(credential.description),
+          organization,
+          credential_type: credentialType,
+          inputs: yamlText(credential.inputs),
+        },
+      };
+    },
+    update: (client, existing, credential) => client.updateCredential(existing.id, credential),
   },
 };

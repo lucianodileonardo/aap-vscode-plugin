@@ -1,6 +1,7 @@
 import { CREDENTIAL_TYPE_KINDS, CredentialTypeInput } from '../aapClient';
 import { credentialTypePlaybook } from '../playbooks/credentialType';
 import { FieldErrors, ResourceFormSpec } from '../views/resourceFormPanel';
+import { text, yamlText } from './existing';
 import { parseMapping } from './parse';
 
 const INPUTS_EXAMPLE = `fields:
@@ -62,4 +63,22 @@ export const credentialTypeForm: ResourceFormSpec<CredentialTypeInput> = {
   },
   create: (client, credentialType) => client.createCredentialType(credentialType),
   playbook: credentialTypePlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/credential_types/',
+    // Built-in (managed) credential types cannot be changed.
+    query: 'managed=false',
+    async read(client, id) {
+      const type = await client.get<Record<string, unknown>>(`api/controller/v2/credential_types/${id}/`);
+      return {
+        values: {
+          name: text(type.name),
+          description: text(type.description),
+          kind: text(type.kind),
+          inputs: yamlText(type.inputs),
+          injectors: yamlText(type.injectors),
+        },
+      };
+    },
+    update: (client, existing, credentialType) => client.updateCredentialType(existing.id, credentialType),
+  },
 };

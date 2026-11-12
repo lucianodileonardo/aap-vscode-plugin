@@ -8,6 +8,7 @@ import {
   projectLookup,
   regularInventoryLookup,
 } from './lookups';
+import { text, variablesText } from './existing';
 import { parseInteger, parseMapping } from './parse';
 
 const SOURCE_LABELS: Record<InventorySourceType, string> = {
@@ -173,4 +174,34 @@ export const inventorySourceForm: ResourceFormSpec<InventorySourceInput> = {
   },
   create: (client, inventorySource) => client.createInventorySource(inventorySource),
   playbook: inventorySourcePlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/inventory_sources/',
+    // The sources AAP creates for constructed inventories are edited with the inventory.
+    query: 'not__source=constructed',
+    organizationFilter: 'inventory__organization',
+    async read(client, id) {
+      const source = await client.get<Record<string, unknown>>(`api/controller/v2/inventory_sources/${id}/`);
+      const [inventory, sourceProject, credential, executionEnvironment] = await Promise.all([
+        client.controllerName('inventories', source.inventory as number | null),
+        client.controllerName('projects', source.source_project as number | null),
+        client.controllerName('credentials', source.credential as number | null),
+        client.controllerName('execution_environments', source.execution_environment as number | null),
+      ]);
+      const values: Record<string, string> = {
+        inventory,
+        source_project: sourceProject,
+        credential,
+        execution_environment: executionEnvironment,
+        source_vars: variablesText(source.source_vars),
+      };
+      for (const key of [
+        'name', 'description', 'source', 'source_path', 'scm_branch', 'verbosity', 'host_filter', 'enabled_var', 'enabled_value', 'limit',
+        'overwrite', 'overwrite_vars', 'update_on_launch', 'update_cache_timeout', 'timeout',
+      ]) {
+        values[key] = text(source[key]);
+      }
+      return { values };
+    },
+    update: (client, existing, inventorySource) => client.updateInventorySource(existing.id, inventorySource),
+  },
 };

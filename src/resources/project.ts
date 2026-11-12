@@ -1,6 +1,7 @@
 import { PROJECT_SCM_TYPES, ProjectInput, ProjectScmType } from '../aapClient';
 import { projectPlaybook } from '../playbooks/project';
 import { FieldErrors, ResourceFormSpec } from '../views/resourceFormPanel';
+import { text } from './existing';
 import { parseInteger } from './parse';
 import { credentialLookup, executionEnvironmentLookup, organizationLookup } from './lookups';
 
@@ -171,4 +172,25 @@ export const projectForm: ResourceFormSpec<ProjectInput> = {
   },
   create: (client, project) => client.createProject(project),
   playbook: projectPlaybook,
+  existing: {
+    endpoint: 'api/controller/v2/projects/',
+    organizationFilter: 'organization',
+    async read(client, id) {
+      const project = await client.get<Record<string, unknown>>(`api/controller/v2/projects/${id}/`);
+      const [organization, credential, defaultEnvironment] = await Promise.all([
+        client.controllerName('organizations', project.organization as number | null),
+        client.controllerName('credentials', project.credential as number | null),
+        client.controllerName('execution_environments', project.default_environment as number | null),
+      ]);
+      const values: Record<string, string> = { organization, credential, default_environment: defaultEnvironment };
+      for (const key of [
+        'name', 'description', 'scm_type', 'scm_url', 'scm_branch', 'scm_refspec', 'local_path', 'scm_clean', 'scm_delete_on_update',
+        'scm_track_submodules', 'scm_update_on_launch', 'allow_override', 'scm_update_cache_timeout', 'timeout',
+      ]) {
+        values[key] = text(project[key]);
+      }
+      return { values };
+    },
+    update: (client, existing, project) => client.updateProject(existing.id, project),
+  },
 };

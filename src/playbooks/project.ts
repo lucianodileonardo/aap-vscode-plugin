@@ -1,14 +1,20 @@
 import { ProjectInput } from '../aapClient';
 import { AapSession } from '../auth';
-import { configurationPlaybook, toYaml } from './yaml';
+import { configurationPlaybook, playbookTarget, toYaml } from './yaml';
 
 /** Builds a playbook that creates the project with infra.aap_configuration.controller_projects. */
-export function projectPlaybook(project: ProjectInput, session: AapSession | undefined, verifyTls: boolean): string {
+export function projectPlaybook(
+  project: ProjectInput,
+  session: AapSession | undefined,
+  verifyTls: boolean,
+  existing?: { name: string },
+): string {
+  const target = playbookTarget('project', project.name, existing);
   const synced = project.scmType !== '';
   // Optional text settings are only written when set, so the playbook mirrors what was entered.
   const optional = (key: string, value: string) => (value ? { [key]: value } : {});
   const item = {
-    name: project.name,
+    ...target.nameKeys,
     description: project.description,
     organization: project.organization,
     scm_type: project.scmType || 'manual',
@@ -32,7 +38,8 @@ export function projectPlaybook(project: ProjectInput, session: AapSession | und
     state: 'present',
   };
   return configurationPlaybook({
-    title: `Creates the "${project.name}" project in Ansible Automation Platform.`,
+    title: `${target.title} in Ansible Automation Platform.`,
+    notes: target.notes,
     playName: 'Create AAP project',
     role: 'controller_projects',
     data: toYaml({ controller_projects: [item] }),

@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { AapClient, AapHttpError } from '../aapClient';
+import { AapClient, AapHttpError, ExistingObject } from '../aapClient';
 import { AapSession, AuthManager, errorMessage } from '../auth';
 
 export type FieldErrors = Record<string, string[]>;
@@ -44,6 +44,26 @@ export interface FieldLookup {
 }
 
 /**
+ * Loading existing objects into a form (Online Mode) so they can be edited, renamed and saved back.
+ */
+export interface ExistingSupport<T> {
+  /** List endpoint of the objects, e.g. "api/controller/v2/projects/". */
+  endpoint: string;
+  /** Extra list filters, e.g. "managed=false". */
+  query?: string;
+  /**
+   * Filter parameter taking a controller organization ID (e.g. "organization" or
+   * "inventory__organization"); when set, the objects are picked by organization.
+   */
+  organizationFilter?: string;
+  /** Fields that cannot change on an existing object; disabled while editing. */
+  lockedFields?: string[];
+  /** Reads an object as form values (the same strings the fields hold). */
+  read(client: AapClient, id: number): Promise<{ values: Record<string, string>; extra?: Record<string, string> }>;
+  update(client: AapClient, existing: ExistingObject, value: T): Promise<{ id: number; name: string }>;
+}
+
+/**
  * Describes one "create a resource" form. The panel handles the UI, the "Use AAP API" /
  * "Generate Playbook" actions and error reporting; the spec only knows about its resource.
  */
@@ -56,15 +76,33 @@ export interface ResourceFormSpec<T extends { name: string }> {
   /** Validates the raw form values. Field-level problems go in fieldErrors, keyed by field id. */
   parse(values: Record<string, string>): { value: T } | { fieldErrors: FieldErrors };
   create(client: AapClient, value: T): Promise<{ id: number; name: string }>;
-  /** Builds the playbook text; may prompt the user (e.g. for a vault password) and resolve to undefined if cancelled. */
-  playbook(value: T, session: AapSession | undefined, verifyTls: boolean): string | undefined | Promise<string | undefined>;
+  /**
+   * Builds the playbook text; may prompt the user (e.g. for a vault password) and resolve to undefined
+   * if cancelled. `existing` is set when an object loaded from AAP is being edited (it may be renamed).
+   */
+  playbook(
+    value: T,
+    session: AapSession | undefined,
+    verifyTls: boolean,
+    existing?: ExistingObject,
+  ): string | undefined | Promise<string | undefined>;
+  /** Edit existing objects; forms without it only create. */
+  existing?: ExistingSupport<T>;
+}
+
+interface ExistingItem {
+  id: number;
+  label: string;
 }
 
 type FromWebview =
   | { type: 'ready' }
   | { type: 'online'; enabled: boolean }
   | { type: 'loadOptions'; fields: { id: string; seq: number }[]; values: Record<string, string> }
-  | { type: 'submit'; values: Record<string, string>; useApi: boolean; generatePlaybook: boolean };
+  | { type: 'listExisting'; seq: number; organization: string; withOrganizations: boolean }
+  | { type: 'loadExisting'; id: number }
+  | { type: 'newObject' }
+  | { type: 'submit'; values: Record<string, string>; useApi: boolean; generatePlaybook: boolean; editingId: number | null };
 
 interface SubmitError {
   message: string;
@@ -76,7 +114,10 @@ type ToWebview =
   | { type: 'busy' }
   | { type: 'online'; enabled: boolean; error?: string }
   | { type: 'options'; id: string; seq: number; options?: LookupOption[]; error?: string }
-  | { type: 'done'; name: string; created?: { id: number }; playbook: boolean; error?: SubmitError };
+  | { type: 'existingList'; seq: number; items?: ExistingItem[]; organizations?: ExistingItem[]; error?: string }
+  | { type: 'loaded'; object?: { id: number; name: string }; values?: Record<string, string>; error?: string }
+  | { type: 'editingCleared'; reason: string }
+  | { type: 'done'; name: string; created?: { id: number }; updated?: { id: number }; playbook: boolean; error?: SubmitError };
 
 /** Extension services a form panel needs. */
 export interface FormContext {
@@ -91,6 +132,10 @@ export class ResourceFormPanel<T extends { name: string }> {
   private readonly disposables: vscode.Disposable[] = [];
   /** Online Mode: lookup fields are lists loaded from AAP. Needs a login, shared by all forms. */
   private online = false;
+  /** The AAP object loaded into the form, if editing one; saving updates it instead of creating. */
+  private editing: ExistingObject | undefined;
+  /** Server and user the edited object was loaded from; a different login ends the editing. */
+  private editingTarget: string | undefined;
 
   static show<T extends { name: string }>(spec: ResourceFormSpec<T>, { extensionUri, auth, log }: FormContext): void {
     const existing = ResourceFormPanel.openPanels.get(spec.viewType);
@@ -136,7 +181,21 @@ export class ResourceFormPanel<T extends { name: string }> {
       await Promise.all(msg.fields.map(({ id, seq }) => this.loadOptions(id, seq, msg.values)));
       return;
     }
+    if (msg.type === 'listExisting') {
+      await this.listExisting(msg.seq, msg.organization, msg.withOrganizations);
+      return;
+    }
+    if (msg.type === 'loadExisting') {
+      await this.loadExisting(msg.id);
+      return;
+    }
+    if (msg.type === 'newObject') {
+      this.setEditing(undefined);
+      return;
+    }
     const { useApi, generatePlaybook } = msg;
+    // The webview says which mode it shows; it wins over a stale state here (e.g. after "New").
+    const editing = this.editing && msg.editingId === this.editing.id ? this.editing : undefined;
     const rawName = msg.values.name?.trim() ?? '';
     const fail = (error: SubmitError) => this.post({ type: 'done', name: rawName, playbook: false, error });
     if (!useApi && !generatePlaybook) {
@@ -154,7 +213,7 @@ export class ResourceFormPanel<T extends { name: string }> {
     let playbook = false;
     if (generatePlaybook) {
       try {
-        if (!(await this.openPlaybook(value))) {
+        if (!(await this.openPlaybook(value, editing))) {
           this.post({ type: 'done', name: value.name, playbook, error: { message: 'Playbook generation cancelled.', fieldErrors: {} } });
           return;
         }
@@ -175,22 +234,32 @@ export class ResourceFormPanel<T extends { name: string }> {
       this.post({ type: 'done', name: value.name, playbook, error: { message: 'Log in to Ansible Automation Platform first.', fieldErrors: {} } });
       return;
     }
+    const verb = editing ? 'Updating' : 'Creating';
     try {
+      if (editing && this.spec.existing) {
+        const updated = await this.spec.existing.update(client, editing, value);
+        this.log.info(`Updated ${this.spec.noun} "${updated.name}" (id ${updated.id}) on ${client.options.baseUrl}.`);
+        editing.name = updated.name;
+        this.setTitle();
+        this.post({ type: 'done', name: updated.name, updated: { id: updated.id }, playbook });
+        vscode.window.showInformationMessage(`${titleCase(this.spec.noun)} "${updated.name}" updated.`);
+        return;
+      }
       const created = await this.spec.create(client, value);
       this.log.info(`Created ${this.spec.noun} "${created.name}" (id ${created.id}) on ${client.options.baseUrl}.`);
       this.post({ type: 'done', name: created.name, created: { id: created.id }, playbook });
       vscode.window.showInformationMessage(`${titleCase(this.spec.noun)} "${created.name}" created.`);
     } catch (err) {
-      this.log.error(`Creating ${this.spec.noun} "${value.name}" failed: ${errorMessage(err)}`);
+      this.log.error(`${verb} ${this.spec.noun} "${value.name}" failed: ${errorMessage(err)}`);
       const fieldErrors = err instanceof AapHttpError ? err.fieldErrors : {};
       this.post({ type: 'done', name: value.name, playbook, error: { message: errorMessage(err), fieldErrors } });
     }
   }
 
   /** Opens the generated playbook in a new unsaved editor beside the form. Returns false if cancelled. */
-  private async openPlaybook(value: T): Promise<boolean> {
+  private async openPlaybook(value: T, editing: ExistingObject | undefined): Promise<boolean> {
     const verifyTls = vscode.workspace.getConfiguration('aap').get<boolean>('verifyTls', true);
-    const content = await this.spec.playbook(value, this.auth.currentSession, verifyTls);
+    const content = await this.spec.playbook(value, this.auth.currentSession, verifyTls, editing && { ...editing });
     if (content === undefined) {
       return false;
     }
@@ -233,9 +302,83 @@ export class ResourceFormPanel<T extends { name: string }> {
     }
   }
 
+  /** Lists the objects that can be loaded, optionally of one organization (a controller organization ID). */
+  private async listExisting(seq: number, organization: string, withOrganizations: boolean): Promise<void> {
+    const existing = this.spec.existing;
+    const client = this.auth.getClientIfLoggedIn();
+    if (!existing || !client) {
+      this.post({ type: 'existingList', seq, error: 'Not logged in.' });
+      return;
+    }
+    try {
+      const filters = ['order_by=name', existing.query, organization && existing.organizationFilter ? `${existing.organizationFilter}=${organization}` : '']
+        .filter(Boolean)
+        .join('&');
+      const [objects, organizations] = await Promise.all([
+        client.listAll<ListedObject>(`${existing.endpoint}?${filters}`),
+        withOrganizations && existing.organizationFilter
+          ? client.listAll<{ id: number; name: string }>('api/controller/v2/organizations/?order_by=name')
+          : undefined,
+      ]);
+      this.post({
+        type: 'existingList',
+        seq,
+        items: objects.map((item) => ({ id: item.id, label: describeListed(item, !organization) })),
+        ...(organizations ? { organizations: organizations.map((org) => ({ id: org.id, label: org.name })) } : {}),
+      });
+    } catch (err) {
+      this.log.warn(`Listing existing ${this.spec.noun} objects failed: ${errorMessage(err)}`);
+      this.post({ type: 'existingList', seq, error: errorMessage(err) });
+    }
+  }
+
+  /** Reads an object into the form; saving then updates it. */
+  private async loadExisting(id: number): Promise<void> {
+    const existing = this.spec.existing;
+    const client = this.auth.getClientIfLoggedIn();
+    if (!existing || !client) {
+      this.post({ type: 'loaded', error: 'Not logged in.' });
+      return;
+    }
+    try {
+      const { values, extra } = await existing.read(client, id);
+      this.setEditing({ id, name: values.name, ...(extra ? { extra } : {}) });
+      this.log.info(`Loaded ${this.spec.noun} "${values.name}" (id ${id}) from ${client.options.baseUrl} for editing.`);
+      this.post({ type: 'loaded', object: { id, name: values.name }, values });
+    } catch (err) {
+      this.log.warn(`Loading ${this.spec.noun} ${id} failed: ${errorMessage(err)}`);
+      this.post({ type: 'loaded', error: errorMessage(err) });
+    }
+  }
+
+  private setEditing(editing: ExistingObject | undefined): void {
+    this.editing = editing;
+    this.editingTarget = editing && this.sessionKey();
+    this.setTitle();
+  }
+
+  private setTitle(): void {
+    const noun = titleCase(this.spec.noun);
+    this.panel.title = this.editing ? `AAP: Edit ${noun}: ${this.editing.name}` : `AAP: New ${noun}`;
+  }
+
+  private sessionKey(): string | undefined {
+    const session = this.auth.currentSession;
+    return session && `${session.username}@${session.baseUrl}`;
+  }
+
   /** Login changes reach every open form: online forms reload their lists, or go offline on logout. */
   private onSessionChanged(): void {
     this.postSession();
+    // An object of another server or account cannot be saved back with this login.
+    if (this.editing && this.sessionKey() !== this.editingTarget) {
+      const name = this.editing.name;
+      this.setEditing(undefined);
+      this.post({
+        type: 'editingCleared',
+        reason: `You switched login, so "${name}" is no longer being edited: saving creates a new ${this.spec.noun}.`,
+      });
+    }
     if (!this.online) {
       return;
     }
@@ -260,6 +403,24 @@ export class ResourceFormPanel<T extends { name: string }> {
     ResourceFormPanel.openPanels.delete(this.spec.viewType);
     this.disposables.forEach((d) => d.dispose());
   }
+}
+
+/** The fields of a listed object used to describe it in the "load existing" list. */
+interface ListedObject {
+  id: number;
+  name: string;
+  kind?: string;
+  summary_fields?: { organization?: { name: string }; inventory?: { name: string }; credential_type?: { name: string } };
+}
+
+function describeListed(item: ListedObject, withOrganization: boolean): string {
+  const details = [
+    item.summary_fields?.credential_type?.name,
+    item.summary_fields?.inventory && `inventory ${item.summary_fields.inventory.name}`,
+    item.kind === 'smart' ? 'smart' : item.kind === 'constructed' ? 'constructed' : undefined,
+    withOrganization ? item.summary_fields?.organization?.name : undefined,
+  ].filter(Boolean);
+  return details.length ? `${item.name} (${details.join(', ')})` : item.name;
 }
 
 function titleCase(text: string): string {
@@ -338,7 +499,10 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
   const lookups = Object.fromEntries(
     lookupFields.map((f) => [f.id, { multiple: !!f.lookup?.multiple, dependsOn: f.lookup?.dependsOn ?? [], required: !!f.required }]),
   );
-  const config = JSON.stringify({ noun: spec.noun, defaults, conditions, lookups }).replace(/</g, '\\u003c');
+  const existing = spec.existing
+    ? { byOrganization: !!spec.existing.organizationFilter, locked: spec.existing.lockedFields ?? [] }
+    : null;
+  const config = JSON.stringify({ noun: spec.noun, defaults, conditions, lookups, existing }).replace(/</g, '\\u003c');
   const onlineHint = lookupFields.length
     ? `Choose ${lookupFields.map((f) => f.label.toLowerCase()).join(', ')} from lists loaded from AAP. Needs a login, shared by all forms.`
     : 'Uses your AAP login, shared by all forms. This form has no values to pick from AAP.';
@@ -388,6 +552,15 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
   .online-row { border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #8884)); border-radius: 2px;
     padding: 2px 12px 8px; margin-bottom: 20px; }
   .online-row .status { color: var(--vscode-errorForeground); }
+  .existing { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 2px 24px; }
+  .existing-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .existing-row select { flex: 1 1 200px; max-width: none; }
+  .existing-row select#existing-org { flex: 0 1 220px; }
+  .editing { margin-top: 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .editing .badge { font-size: 0.85em; padding: 1px 6px; border-radius: 8px; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); }
+  button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); padding: 3px 10px; }
+  button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  select:disabled, input:disabled { opacity: 0.6; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -395,8 +568,12 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
   <header>
     <img class="logo" src="${escapeHtml(logoUri)}" alt="" width="44" height="44">
     <div>
-      <h1>New ${noun}</h1>
+      <h1 id="title">New ${noun}</h1>
       <div class="target" id="target"></div>
+      <div class="editing" id="editing" hidden>
+        <span class="badge">EDIT</span><span id="editing-text"></span>
+        <button type="button" class="secondary" id="new-object">New ${noun}</button>
+      </div>
     </div>
   </header>
   <div class="banner" id="banner" hidden></div>
@@ -404,15 +581,32 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
     <div class="online-row">
       <label class="check"><input type="checkbox" id="online">
         <span>Online Mode<br><span class="hint" id="online-hint">${escapeHtml(onlineHint)}</span>
-        <span class="hint status" id="online-status" hidden></span></span></label>
+        <span class="hint status" id="online-status" hidden></span></span></label>${
+          spec.existing
+            ? `
+      <div class="existing" id="existing" hidden>
+        <label id="existing-label">Edit an existing ${noun}</label>
+        <span class="hint">Load it into the form, change it, then save it back to AAP. A new name renames it.</span>
+        <div class="existing-row">${
+          spec.existing.organizationFilter
+            ? `<select id="existing-org" aria-label="Organization"><option value="">All organizations</option></select>`
+            : ''
+        }
+          <select id="existing-item" aria-labelledby="existing-label"></select>
+          <button type="button" id="existing-load">Load</button>
+        </div>
+        <span class="field-error" id="existing-error" hidden></span>
+      </div>`
+            : ''
+        }
     </div>
     ${spec.fields.map(renderField).join('')}
     <fieldset>
       <legend>Actions</legend>
       <label class="check"><input type="checkbox" id="useApi" checked>
-        <span>Use AAP API<br><span class="hint">Create the ${noun} now on the connected platform.</span></span></label>
+        <span>Use AAP API<br><span class="hint" id="useApi-hint"></span></span></label>
       <label class="check"><input type="checkbox" id="generatePlaybook">
-        <span>Generate Playbook<br><span class="hint">Open an infra.aap_configuration playbook that creates this ${noun}. No login needed.</span></span></label>
+        <span>Generate Playbook<br><span class="hint" id="generatePlaybook-hint"></span></span></label>
     </fieldset>
     <button type="submit" id="submit"></button>
   </form>
@@ -435,10 +629,36 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
     generatePlaybook.checked = saved.generatePlaybook;
   }
 
+  // The AAP object being edited ({ id, name }), or null when the form creates a new one.
+  let editing = null;
   function submitLabel() {
-    if (useApi.checked && generatePlaybook.checked) return 'Create & generate playbook';
+    const verb = editing ? 'Update' : 'Create';
+    if (useApi.checked && generatePlaybook.checked) return verb + ' & generate playbook';
     if (generatePlaybook.checked) return 'Generate playbook';
-    return 'Create ' + config.noun;
+    return verb + ' ' + config.noun;
+  }
+  // Header, hints and locked fields follow the mode (new object, or editing a loaded one).
+  function updateMode() {
+    document.getElementById('title').textContent = editing ? 'Edit ' + config.noun : 'New ' + config.noun;
+    document.getElementById('editing').hidden = !editing;
+    if (editing) document.getElementById('editing-text').textContent = '"' + editing.name + '" (id ' + editing.id + ')';
+    document.getElementById('useApi-hint').textContent = editing
+      ? 'Save the changes to "' + editing.name + '" on the connected platform.'
+      : 'Create the ' + config.noun + ' now on the connected platform.';
+    document.getElementById('generatePlaybook-hint').textContent = editing
+      ? 'Open an infra.aap_configuration playbook that applies this ' + config.noun + ' (renaming it if the name changed). No login needed.'
+      : 'Open an infra.aap_configuration playbook that creates this ' + config.noun + '. No login needed.';
+    for (const id of config.existing ? config.existing.locked : []) {
+      document.getElementById(id).disabled = !!editing;
+      const errorEl = document.getElementById(id + '-error');
+      if (editing) {
+        errorEl.textContent = 'Cannot be changed on an existing ' + config.noun + '.';
+        errorEl.className = 'hint';
+      }
+      errorEl.hidden = !editing;
+      if (!editing) errorEl.className = 'field-error';
+    }
+    updateSubmit();
   }
   function updateSubmit() {
     submit.textContent = busy ? 'Working…' : submitLabel();
@@ -482,7 +702,9 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
     showBanner('', '');
     const values = {};
     for (const id of fieldIds) values[id] = readValue(id);
-    vscode.postMessage({ type: 'submit', values, useApi: useApi.checked, generatePlaybook: generatePlaybook.checked });
+    vscode.postMessage({
+      type: 'submit', values, useApi: useApi.checked, generatePlaybook: generatePlaybook.checked, editingId: editing ? editing.id : null,
+    });
   });
 
   window.addEventListener('message', ({ data: msg }) => {
@@ -505,27 +727,135 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
       case 'options':
         fillOptions(msg);
         break;
+      case 'existingList':
+        fillExisting(msg);
+        break;
+      case 'loaded':
+        onLoaded(msg);
+        break;
+      case 'editingCleared':
+        editing = null;
+        updateMode();
+        showBanner('error', msg.reason);
+        break;
       case 'done': {
         busy = false;
         updateSubmit();
         const noun = config.noun.charAt(0).toUpperCase() + config.noun.slice(1);
         const done = [];
         if (msg.created) done.push(noun + ' "' + msg.name + '" created (id ' + msg.created.id + ').');
+        if (msg.updated) done.push(noun + ' "' + msg.name + '" updated (id ' + msg.updated.id + ').');
         if (msg.playbook) done.push('Playbook for "' + msg.name + '" opened in the editor.');
         if (msg.error) {
           const inline = showFieldErrors(msg.error.fieldErrors);
           const problem = inline ? 'Please fix the errors below.' : msg.error.message;
           showBanner('error', done.concat(problem).join(' '));
+        } else if (editing) {
+          // Editing continues on the saved object, which may have been renamed.
+          if (msg.updated) {
+            editing.name = msg.name;
+            updateMode();
+            if (online) requestExisting(false);
+          }
+          showBanner('success', done.join(' '));
         } else {
-          for (const id of fieldIds) writeValue(id, config.defaults[id]);
-          applyConditions();
-          if (online) requestOptions(lookupIds.filter((id) => config.lookups[id].dependsOn.length), false);
+          resetForm();
+          if (msg.created && online) requestExisting(false);
           showBanner('success', done.join(' '));
           firstField.focus();
         }
         break;
       }
     }
+  });
+
+  function resetForm() {
+    for (const id of fieldIds) writeValue(id, config.defaults[id]);
+    applyConditions();
+    if (online) requestOptions(lookupIds.filter((id) => config.lookups[id].dependsOn.length), false);
+  }
+
+  // ---- Editing existing objects (Online Mode) ----
+  const existingBox = document.getElementById('existing');
+  const existingOrg = document.getElementById('existing-org');
+  const existingItem = document.getElementById('existing-item');
+  const existingLoad = document.getElementById('existing-load');
+  const existingError = document.getElementById('existing-error');
+  let existingSeq = 0;
+  let organizationsLoaded = false;
+
+  function requestExisting(withOrganizations) {
+    if (!existingBox) return;
+    existingSeq++;
+    existingItem.disabled = true;
+    existingLoad.disabled = true;
+    existingItem.replaceChildren(new Option('Loading…', ''));
+    vscode.postMessage({
+      type: 'listExisting', seq: existingSeq, organization: existingOrg ? existingOrg.value : '', withOrganizations,
+    });
+  }
+  function fillExisting(msg) {
+    if (!online || msg.seq !== existingSeq) return;
+    existingError.hidden = !msg.error;
+    if (msg.error) {
+      existingError.textContent = msg.error;
+      existingItem.replaceChildren(new Option('Could not load the list', ''));
+      return;
+    }
+    if (msg.organizations && existingOrg) {
+      const chosen = existingOrg.value;
+      existingOrg.replaceChildren(new Option('All organizations', ''), ...msg.organizations.map((o) => new Option(o.label, String(o.id))));
+      existingOrg.value = chosen;
+      organizationsLoaded = true;
+    }
+    const chosen = existingItem.value;
+    const options = msg.items.length
+      ? [new Option('Select ' + (/^[aeiou]/.test(config.noun) ? 'an ' : 'a ') + config.noun + '…', ''), ...msg.items.map((o) => new Option(o.label, String(o.id)))]
+      : [new Option('No ' + config.noun + ' found', '')];
+    existingItem.replaceChildren(...options);
+    existingItem.value = msg.items.some((o) => String(o.id) === chosen) ? chosen : '';
+    existingItem.disabled = !msg.items.length;
+    existingLoad.disabled = !existingItem.value;
+  }
+  function onLoaded(msg) {
+    existingLoad.disabled = !existingItem.value;
+    existingItem.disabled = false;
+    if (msg.error) {
+      existingError.textContent = 'Loading failed: ' + msg.error;
+      existingError.hidden = false;
+      return;
+    }
+    clearErrors();
+    editing = msg.object;
+    for (const id of fieldIds) {
+      // Lists are rebuilt below; marking them unloaded keeps the loaded value as the one to select.
+      if (config.lookups[id]) loaded[id] = false;
+      writeValue(id, msg.values[id] !== undefined ? msg.values[id] : config.defaults[id]);
+    }
+    applyConditions();
+    if (online) requestOptions(lookupIds);
+    updateMode();
+    showBanner('success', 'Loaded "' + editing.name + '" (id ' + editing.id + '). Saving updates it; change the name to rename it.');
+  }
+  if (existingBox) {
+    if (existingOrg) existingOrg.addEventListener('change', () => requestExisting(false));
+    existingItem.addEventListener('change', () => { existingLoad.disabled = !existingItem.value; });
+    existingLoad.addEventListener('click', () => {
+      if (!existingItem.value) return;
+      existingError.hidden = true;
+      existingLoad.disabled = true;
+      existingItem.disabled = true;
+      vscode.postMessage({ type: 'loadExisting', id: Number(existingItem.value) });
+    });
+  }
+  document.getElementById('new-object').addEventListener('click', () => {
+    editing = null;
+    clearErrors();
+    resetForm();
+    updateMode();
+    showBanner('', '');
+    vscode.postMessage({ type: 'newObject' });
+    firstField.focus();
   });
 
   function readValue(id) {
@@ -640,6 +970,7 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
   function setOnlineUi(enabled) {
     if (enabled && online) {
       requestOptions(lookupIds); // already online: reload, e.g. after switching account
+      requestExisting(true);
       return;
     }
     if (!enabled && !online) {
@@ -663,7 +994,11 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
       const multiHint = document.getElementById(id + '__multi');
       if (multiHint) multiHint.hidden = !enabled;
     }
-    if (enabled) requestOptions(lookupIds);
+    if (existingBox) existingBox.hidden = !enabled;
+    if (enabled) {
+      requestOptions(lookupIds);
+      requestExisting(!organizationsLoaded);
+    }
   }
 
   onlineBox.addEventListener('change', () => {
@@ -700,7 +1035,7 @@ function renderHtml<T extends { name: string }>(spec: ResourceFormSpec<T>, nonce
   }
 
   applyConditions();
-  updateSubmit();
+  updateMode();
   vscode.postMessage({ type: 'ready' });
   firstField.focus();
 </script>

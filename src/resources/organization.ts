@@ -18,4 +18,12 @@ export const organizationForm: ResourceFormSpec<OrganizationInput> = {
   },
   create: (client, org) => client.createOrganization(org),
   playbook: organizationPlaybook,
+  existing: {
+    endpoint: 'api/gateway/v1/organizations/',
+    async read(client, id) {
+      const org = await client.get<{ name: string; description: string }>(`api/gateway/v1/organizations/${id}/`);
+      return { values: { name: org.name, description: org.description ?? '' } };
+    },
+    update: (client, existing, org) => client.updateOrganization(existing.id, org),
+  },
 };
