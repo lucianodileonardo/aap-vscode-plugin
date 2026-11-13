@@ -1,5 +1,11 @@
 # Ansible Automation Platform for VSCodium / VS Code
 
+Ansible Automation Platform VSCode plugin: manage AAP through Configuration as Code.
+This plugin manages most of AAP objects:
+
+- Directly - AAP Rest APIs
+- Configuration As Code - Prepare your object as Ansible Playbook
+
 Work with Red Hat Ansible Automation Platform **2.5, 2.6 and 2.7** from the editor.
 
 ## Features
