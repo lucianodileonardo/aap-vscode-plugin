@@ -144,3 +144,14 @@ export const inventoryFileLookup: FieldLookup = {
     return project ? (await client.projectInventoryFiles(project)).map((file) => ({ value: file })) : [];
   },
 };
+
+/**
+ * Platform (gateway) organizations. Users and teams live in the gateway, whose organization list
+ * is the source of truth (controller gets a synced copy a few seconds later).
+ */
+export const gatewayOrganizationLookup: FieldLookup = {
+  async load(client) {
+    return (await client.listAll<{ name: string }>('api/gateway/v1/organizations/?order_by=name')).map((org) => ({ value: org.name }));
+  },
+};
+export const gatewayOrganizationsLookup: FieldLookup = { ...gatewayOrganizationLookup, multiple: true };

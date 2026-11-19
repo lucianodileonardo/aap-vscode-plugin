@@ -36,6 +36,32 @@ from the status bar menu. Choose one or both actions:
   `ansible.platform` and `ansible.controller` come from Red Hat Automation Hub. `AAP_HOSTNAME` /
   `AAP_USERNAME` override the defaults taken from your current login.
 
+### Users
+**AAP: Create User** creates a platform user (`POST /api/gateway/v1/users/`). It takes:
+- username, password with confirmation, first name, last name and email;
+- **user type**: normal user, platform auditor or platform administrator (superuser);
+- the **organizations** the user belongs to.
+
+The organizations and the auditor type are applied the same way the `ansible.platform.user` module
+does it: as gateway role assignments ("Organization Member" on each organization, "Platform
+Auditor" with no object), through `/api/gateway/v1/role_user_assignments/`.
+
+When you edit a user:
+- an empty password keeps the current one;
+- organizations removed from the list lose the membership.
+
+The playbook uses `infra.aap_configuration.gateway_users` (`aap_user_accounts`), followed by
+`gateway_role_user_assignments` for memberships. The password is encrypted with Ansible Vault.
+Without a password, the playbook sets `update_secrets: false`. The `gateway_users` role cannot
+rename users, and playbook role assignments are only added, never removed. The playbook header
+says so when it applies.
+
+### Teams
+**AAP: Create Team** creates a team with a name, description and organization
+(`POST /api/gateway/v1/teams/`, playbook role `infra.aap_configuration.gateway_teams`, list
+`aap_teams`). Editing can rename the team and move it to another organization. The playbook writes
+that move as `organization` plus `new_organization`.
+
 ### Credential types
 **AAP: Create Credential Type** opens the same kind of form, with the same **Use AAP API** /
 **Generate Playbook** actions, for a custom credential type in automation controller:
@@ -77,6 +103,18 @@ role `infra.aap_configuration.controller_instance_groups`):
   name; empty uses the service account of the pod AAP runs in), optional **pod spec override**
   in YAML/JSON (sent exactly as written; written as a readable `|` block in the playbook), max
   concurrent jobs and max forks.
+
+### Execution environments
+**AAP: Create Execution Environment** — same form and actions
+(`POST /api/controller/v2/execution_environments/`, playbook role
+`infra.aap_configuration.controller_execution_environments`):
+- name and description;
+- **image**: the full location, e.g. `quay.io/acme/ee:1.0`;
+- **pull**: default, always, only if not present, or never;
+- organization: leave it empty for a global execution environment, which needs a superuser;
+- registry credential: in Online Mode, only Container Registry credentials are listed.
+
+The execution environments that ship with AAP are not listed for editing.
 
 ### Projects
 **AAP: Create Project** — same form and actions (`POST /api/controller/v2/projects/`, playbook
@@ -127,6 +165,32 @@ fact storage / concurrent jobs / instance group fallback options, and **Prompt o
 
 With the API, every name is resolved first (unknown or ambiguous names are reported and nothing
 is created); credentials and instance groups are then attached in the given order.
+
+### Roles
+**AAP: Create Role** creates a custom role definition, the same kind of role as Access Management
+→ Roles in the AAP UI. It takes:
+- a name and a description;
+- the **resource type** the role is granted on: `awx.jobtemplate`, `awx.inventory`,
+  `awx.project`, `awx.credential`, `awx.workflowjobtemplate`, `shared.organization`,
+  `shared.team` and so on;
+- the **permissions**, such as `awx.view_jobtemplate` and `awx.execute_jobtemplate`.
+
+Include the resource type's view permission. An organization role can also hold permissions on
+the objects inside the organization, for example `awx.add_project`.
+
+In Online Mode, the resource types and the permissions each one accepts come from AAP's role
+metadata, with readable labels like "Execute job template (awx.execute_jobtemplate)". Offline,
+type them one per line.
+
+Where the role is saved depends on the AAP version:
+
+| AAP | API | Playbook role |
+|---|---|---|
+| 2.5 | `POST /api/controller/v2/role_definitions/` | `infra.aap_configuration.controller_role_definitions` |
+| 2.6 and later | `POST /api/gateway/v1/role_definitions/` | `infra.aap_configuration.gateway_role_definitions` |
+
+Without a login, the playbook targets 2.6 and later and says so in its header. Built-in (managed)
+roles are not listed for editing. The resource type of an existing role cannot be changed.
 
 ### Online Mode (all forms)
 Each form has an **Online Mode** checkbox (off by default). Turning it on requires an AAP login —

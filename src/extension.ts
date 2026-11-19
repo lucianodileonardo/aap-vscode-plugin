@@ -2,26 +2,34 @@ import * as vscode from 'vscode';
 import { AapSession, AuthManager } from './auth';
 import { credentialForm } from './resources/credential';
 import { credentialTypeForm } from './resources/credentialType';
+import { executionEnvironmentForm } from './resources/executionEnvironment';
 import { containerGroupForm, instanceGroupForm } from './resources/instanceGroup';
 import { inventoryForm } from './resources/inventory';
 import { inventorySourceForm } from './resources/inventorySource';
 import { jobTemplateForm } from './resources/jobTemplate';
 import { organizationForm } from './resources/organization';
 import { projectForm } from './resources/project';
+import { roleDefinitionForm } from './resources/roleDefinition';
+import { teamForm } from './resources/team';
+import { userForm } from './resources/user';
 import { FormContext, ResourceFormPanel, ResourceFormSpec } from './views/resourceFormPanel';
 import { WorkflowDesignerPanel } from './views/workflowDesignerPanel';
 
 /** Every "create" form: registered as a command and listed in the status bar menu. */
 const FORMS: { command: string; label: string; spec: ResourceFormSpec<{ name: string }> }[] = [
   { command: 'aap.createOrganization', label: '$(organization) Create organization', spec: organizationForm },
+  { command: 'aap.createUser', label: '$(person) Create user', spec: userForm },
+  { command: 'aap.createTeam', label: '$(people) Create team', spec: teamForm },
   { command: 'aap.createCredentialType', label: '$(key) Create credential type', spec: credentialTypeForm },
   { command: 'aap.createCredential', label: '$(lock) Create credential', spec: credentialForm },
   { command: 'aap.createInstanceGroup', label: '$(server-environment) Create instance group', spec: instanceGroupForm },
   { command: 'aap.createContainerGroup', label: '$(package) Create container group', spec: containerGroupForm },
+  { command: 'aap.createExecutionEnvironment', label: '$(vm) Create execution environment', spec: executionEnvironmentForm },
   { command: 'aap.createProject', label: '$(repo) Create project', spec: projectForm },
   { command: 'aap.createInventory', label: '$(list-tree) Create inventory', spec: inventoryForm },
   { command: 'aap.createInventorySource', label: '$(cloud-download) Create inventory source', spec: inventorySourceForm },
   { command: 'aap.createJobTemplate', label: '$(rocket) Create job template', spec: jobTemplateForm },
+  { command: 'aap.createRole', label: '$(shield) Create role', spec: roleDefinitionForm },
 ];
 
 export function activate(context: vscode.ExtensionContext): void {

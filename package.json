@@ -2,7 +2,7 @@
   "name": "aap-vscode",
   "displayName": "Ansible Automation Platform",
   "description": "Ansible Automation Platform VSCode plugin: manage AAP through Configuration as Code. Work with Red Hat Ansible Automation Platform 2.5 / 2.6 / 2.7",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "publisher": "lucianodileonardo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -43,6 +43,18 @@
         "icon": "$(organization)"
       },
       {
+        "command": "aap.createUser",
+        "title": "Create User",
+        "category": "AAP",
+        "icon": "$(person)"
+      },
+      {
+        "command": "aap.createTeam",
+        "title": "Create Team",
+        "category": "AAP",
+        "icon": "$(people)"
+      },
+      {
         "command": "aap.createCredentialType",
         "title": "Create Credential Type",
         "category": "AAP",
@@ -67,6 +79,12 @@
         "icon": "$(package)"
       },
       {
+        "command": "aap.createExecutionEnvironment",
+        "title": "Create Execution Environment",
+        "category": "AAP",
+        "icon": "$(vm)"
+      },
+      {
         "command": "aap.createProject",
         "title": "Create Project",
         "category": "AAP",
@@ -89,6 +107,12 @@
         "title": "Create Job Template",
         "category": "AAP",
         "icon": "$(rocket)"
+      },
+      {
+        "command": "aap.createRole",
+        "title": "Create Role",
+        "category": "AAP",
+        "icon": "$(shield)"
       },
       {
         "command": "aap.workflowDesigner",
