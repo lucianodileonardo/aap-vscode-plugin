@@ -41,6 +41,19 @@ export interface Organization {
 export interface OrganizationInput {
   name: string;
   description?: string;
+  /** Controller settings of the organization, by name. Galaxy credentials are in search order. */
+  galaxyCredentials: string[];
+  /** Default execution environment ('' = none). */
+  defaultEnvironment: string;
+  /** Instance groups in order of preference. */
+  instanceGroups: string[];
+}
+
+/** Controller-side settings of an organization, read back by name for editing. */
+export interface OrganizationSettings {
+  galaxyCredentials: string[];
+  defaultEnvironment: string;
+  instanceGroups: string[];
 }
 
 /** Custom credential types can only be of kind "cloud" or "net". */
@@ -277,6 +290,78 @@ export interface InventorySourceInput {
   timeout: number;
 }
 
+/** Normal user, platform auditor (read-only everywhere) or superuser (platform administrator). */
+export const USER_TYPES = ['normal', 'auditor', 'superuser'] as const;
+export type UserType = (typeof USER_TYPES)[number];
+
+/** A platform (gateway) user as entered; organizations are names. */
+export interface UserInput {
+  /** The username; called name so the form framework can treat it like other objects. */
+  name: string;
+  /** Empty when editing keeps the current password. */
+  password: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  userType: UserType;
+  /** Organizations the user is a member of ("Organization Member" role). */
+  organizations: string[];
+}
+
+/** A platform (gateway) team as entered; the organization is a name. */
+export interface TeamInput {
+  name: string;
+  description: string;
+  organization: string;
+}
+
+/** Gateway role definitions the user form assigns (the same ones ansible.platform.user uses). */
+export const ORGANIZATION_MEMBER_ROLE = 'Organization Member';
+export const PLATFORM_AUDITOR_ROLE = 'Platform Auditor';
+
+interface RoleUserAssignment {
+  id: number;
+  object_id: string | number | null;
+}
+
+/** How an execution environment's image is pulled before a job runs ('' = the platform default). */
+export const EE_PULL_OPTIONS = ['', 'always', 'missing', 'never'] as const;
+export type EePull = (typeof EE_PULL_OPTIONS)[number];
+
+/** Execution environment as entered; organization and credential are names ('' = none). */
+export interface ExecutionEnvironmentInput {
+  name: string;
+  description: string;
+  image: string;
+  /** Empty makes it a global execution environment, available to every organization. */
+  organization: string;
+  /** Container registry credential for pulling the image. */
+  credential: string;
+  pull: EePull;
+}
+
+export interface ExecutionEnvironment {
+  id: number;
+  name: string;
+}
+
+/**
+ * A custom role definition (AAP 2.5+ RBAC). `contentType` is the kind of object the role is
+ * granted on, e.g. "awx.jobtemplate" or "shared.organization"; permissions look like
+ * "awx.execute_jobtemplate".
+ */
+export interface RoleDefinitionInput {
+  name: string;
+  description?: string;
+  contentType: string;
+  permissions: string[];
+}
+
+export interface RoleDefinition {
+  id: number;
+  name: string;
+}
+
 /** An object loaded from AAP into a form to be edited (and possibly renamed). */
 export interface ExistingObject {
   id: number;
@@ -284,6 +369,26 @@ export interface ExistingObject {
   name: string;
   /** Resource-specific facts, e.g. the name of a constructed inventory's source. */
   extra?: Record<string, string>;
+}
+
+function userBody(input: UserInput) {
+  return {
+    username: input.name,
+    first_name: input.firstName,
+    last_name: input.lastName,
+    email: input.email,
+    is_superuser: input.userType === 'superuser',
+    // Left out when editing without a new password, so the current one is kept.
+    ...(input.password ? { password: input.password } : {}),
+  };
+}
+
+/** How long to wait for a gateway organization to appear in controller: 15 tries, 1 s apart. */
+export const ORGANIZATION_SYNC_ATTEMPTS = 15;
+export let ORGANIZATION_SYNC_DELAY_MS = 1000;
+/** For tests. */
+export function setOrganizationSyncDelay(ms: number): void {
+  ORGANIZATION_SYNC_DELAY_MS = ms;
 }
 
 function organizationBody(input: OrganizationInput) {
@@ -391,6 +496,57 @@ export class AapClient {
     return version;
   }
 
+  private versionCache?: Promise<SupportedVersion>;
+
+  /** The AAP release, detected once per client. */
+  version(): Promise<SupportedVersion> {
+    if (!this.versionCache) {
+      const detecting = this.detectVersion();
+      // A failed detection (e.g. network) is retried on the next call.
+      detecting.catch(() => (this.versionCache = undefined));
+      this.versionCache = detecting;
+    }
+    return this.versionCache;
+  }
+
+  /**
+   * API that owns custom roles: automation controller on AAP 2.5, the platform gateway from 2.6 on
+   * (where roles of every service are managed centrally).
+   */
+  async rbacApi(): Promise<string> {
+    return (await this.version()) === '2.5' ? 'api/controller/v2/' : 'api/gateway/v1/';
+  }
+
+  /** Permissions each content type accepts, e.g. { "awx.jobtemplate": ["awx.view_jobtemplate", ...] }. */
+  async roleMetadata(): Promise<Record<string, string[]>> {
+    const primary = await this.rbacApi();
+    const other = primary === 'api/gateway/v1/' ? 'api/controller/v2/' : 'api/gateway/v1/';
+    for (const api of [primary, other]) {
+      try {
+        const data = await this.request<{ allowed_permissions?: Record<string, string[]> }>('GET', `${api}role_metadata/`);
+        if (data.allowed_permissions && Object.keys(data.allowed_permissions).length) {
+          return data.allowed_permissions;
+        }
+      } catch (err) {
+        if (!(err instanceof AapHttpError && err.status === 404)) {
+          throw err;
+        }
+      }
+    }
+    // No metadata endpoint: the built-in roles together name every resource type and permission.
+    const roles = await this.listAll<{ content_type: string | null; permissions?: string[] }>(`${primary}role_definitions/?managed=true`);
+    const metadata: Record<string, string[]> = {};
+    for (const role of roles) {
+      if (role.content_type) {
+        metadata[role.content_type] = [...new Set([...(metadata[role.content_type] ?? []), ...(role.permissions ?? [])])];
+      }
+    }
+    if (!Object.keys(metadata).length) {
+      throw new Error(`AAP did not report any role resource types (${primary}role_metadata/ and role_definitions/).`);
+    }
+    return metadata;
+  }
+
   /** Returns the user the credentials belong to. Fails with 401 on bad credentials. */
   async me(): Promise<AapUser> {
     const data = await this.request<{ results?: AapUser[] } | AapUser>('GET', 'api/gateway/v1/me/');
@@ -405,13 +561,85 @@ export class AapClient {
   // Each resource has a create (POST) and an update (PATCH of an existing object, which may also
   // rename it); both send the same body, built by a *Body method that resolves names to IDs first.
 
-  /** Creates an organization in the platform gateway; it is synced to controller, EDA and hub. */
-  createOrganization(input: OrganizationInput): Promise<Organization> {
-    return this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: organizationBody(input) });
+  /**
+   * Creates an organization in the platform gateway (it is synced to controller, EDA and hub),
+   * then sets its controller settings: galaxy credentials, default execution environment and
+   * instance groups. Those names are resolved before anything is created.
+   */
+  async createOrganization(input: OrganizationInput): Promise<Organization> {
+    const settings = await this.organizationSettingIds(input);
+    const org = await this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: organizationBody(input) });
+    if (settings.defaultEnvironment !== null || settings.galaxyCredentials.length || settings.instanceGroups.length) {
+      await this.afterCreate(`Organization "${org.name}" (id ${org.id})`, 'galaxy credentials, execution environment or instance groups', () =>
+        this.applyOrganizationSettings(org.name, settings),
+      );
+    }
+    return org;
   }
 
-  updateOrganization(id: number, input: OrganizationInput): Promise<Organization> {
-    return this.request<Organization>('PATCH', `api/gateway/v1/organizations/${id}/`, { body: organizationBody(input) });
+  /** Updates an organization in the gateway; its controller settings are made to match the input. */
+  async updateOrganization(id: number, input: OrganizationInput): Promise<Organization> {
+    const settings = await this.organizationSettingIds(input);
+    const org = await this.request<Organization>('PATCH', `api/gateway/v1/organizations/${id}/`, { body: organizationBody(input) });
+    await this.applyOrganizationSettings(org.name, settings);
+    return org;
+  }
+
+  /** Galaxy credentials, default execution environment and instance groups of an organization. */
+  async organizationSettings(name: string): Promise<OrganizationSettings> {
+    const id = await this.findControllerId('organizations', name, 'name');
+    const org = await this.get<{ default_environment: number | null }>(`api/controller/v2/organizations/${id}/`);
+    const [defaultEnvironment, galaxyCredentials, instanceGroups] = await Promise.all([
+      this.controllerName('execution_environments', org.default_environment),
+      this.relatedNames(`organizations/${id}/galaxy_credentials/`),
+      this.relatedNames(`organizations/${id}/instance_groups/`),
+    ]);
+    return { galaxyCredentials, defaultEnvironment, instanceGroups };
+  }
+
+  private async organizationSettingIds(input: OrganizationInput) {
+    const lookupAll = (endpoint: string, names: string[], field: string) =>
+      Promise.all(names.map((name) => this.findControllerId(endpoint, name, field)));
+    const [galaxyCredentials, defaultEnvironment, instanceGroups] = await Promise.all([
+      lookupAll('credentials', input.galaxyCredentials, 'galaxy_credentials'),
+      input.defaultEnvironment
+        ? this.findControllerId('execution_environments', input.defaultEnvironment, 'default_environment')
+        : null,
+      lookupAll('instance_groups', input.instanceGroups, 'instance_groups'),
+    ]);
+    return { galaxyCredentials, defaultEnvironment, instanceGroups };
+  }
+
+  /**
+   * Sets the controller settings on the controller copy of a gateway organization. A new or
+   * renamed organization reaches controller through the gateway's resource sync, so the
+   * lookup by name is retried for a short while.
+   */
+  private async applyOrganizationSettings(
+    name: string,
+    settings: { galaxyCredentials: number[]; defaultEnvironment: number | null; instanceGroups: number[] },
+  ): Promise<void> {
+    const id = await this.waitForControllerOrganization(name);
+    await this.request('PATCH', `api/controller/v2/organizations/${id}/`, { body: { default_environment: settings.defaultEnvironment } });
+    const galaxy = `organizations/${id}/galaxy_credentials/`;
+    const groups = `organizations/${id}/instance_groups/`;
+    // Read the current lists even for a new organization: the sync may attach defaults.
+    // Both lists are ordered: galaxy credentials are searched in order, instance groups are a preference.
+    await this.syncRelated(galaxy, await this.relatedIds(galaxy), settings.galaxyCredentials, true);
+    await this.syncRelated(groups, await this.relatedIds(groups), settings.instanceGroups, true);
+  }
+
+  private async waitForControllerOrganization(name: string): Promise<number> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.findControllerId('organizations', name, 'name');
+      } catch (err) {
+        if (attempt >= ORGANIZATION_SYNC_ATTEMPTS || !(err instanceof AapHttpError && err.status === 400)) {
+          throw err;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ORGANIZATION_SYNC_DELAY_MS));
+      }
+    }
   }
 
   /** Creates a custom credential type in automation controller (reached through the gateway). */
@@ -650,6 +878,155 @@ export class AapClient {
     return this.request<InventorySource>('PATCH', `api/controller/v2/inventory_sources/${id}/`, { body: await this.inventorySourceBody(input) });
   }
 
+  /** Creates an execution environment in automation controller; names are resolved to IDs first. */
+  async createExecutionEnvironment(input: ExecutionEnvironmentInput): Promise<ExecutionEnvironment> {
+    return this.request<ExecutionEnvironment>('POST', 'api/controller/v2/execution_environments/', {
+      body: await this.executionEnvironmentBody(input),
+    });
+  }
+
+  async updateExecutionEnvironment(id: number, input: ExecutionEnvironmentInput): Promise<ExecutionEnvironment> {
+    return this.request<ExecutionEnvironment>('PATCH', `api/controller/v2/execution_environments/${id}/`, {
+      body: await this.executionEnvironmentBody(input),
+    });
+  }
+
+  private async executionEnvironmentBody(input: ExecutionEnvironmentInput) {
+    const [organization, credential] = await Promise.all([
+      input.organization ? this.findControllerId('organizations', input.organization, 'organization') : null,
+      input.credential ? this.findControllerId('credentials', input.credential, 'credential') : null,
+    ]);
+    return {
+      name: input.name,
+      description: input.description,
+      image: input.image,
+      organization,
+      credential,
+      pull: input.pull,
+    };
+  }
+
+  // ---- Platform users and teams (gateway). Organization membership and the platform auditor flag
+  // are role assignments ("Organization Member" on each organization, "Platform Auditor" globally),
+  // as the ansible.platform.user module does it.
+
+  /** Creates a gateway user, then makes it a member of its organizations (and an auditor). */
+  async createUser(input: UserInput): Promise<{ id: number; name: string }> {
+    if (!input.password) {
+      const message = 'A new user needs a password.';
+      throw new AapHttpError(400, message, JSON.stringify({ password: [message] }));
+    }
+    // Resolve every name first, so nothing is created when one is wrong.
+    const organizations = await this.gatewayIds('organizations', input.organizations, 'organizations');
+    const user = await this.request<{ id: number; username: string }>('POST', 'api/gateway/v1/users/', { body: userBody(input) });
+    await this.afterCreate(`User "${user.username}"`, 'organizations', () => this.syncUserRoles(user.id, organizations, input.userType === 'auditor'));
+    return { id: user.id, name: user.username };
+  }
+
+  /** Updates a gateway user; organizations it should no longer belong to lose the membership. */
+  async updateUser(id: number, input: UserInput): Promise<{ id: number; name: string }> {
+    const organizations = await this.gatewayIds('organizations', input.organizations, 'organizations');
+    const user = await this.request<{ id: number; username: string }>('PATCH', `api/gateway/v1/users/${id}/`, { body: userBody(input) });
+    await this.syncUserRoles(id, organizations, input.userType === 'auditor');
+    return { id: user.id, name: user.username };
+  }
+
+  /** Names of the organizations a user is a member of, and whether the user is a platform auditor. */
+  async userRoles(userId: number): Promise<{ organizations: string[]; auditor: boolean }> {
+    const [member, auditor] = await Promise.all([this.userAssignments(userId, ORGANIZATION_MEMBER_ROLE), this.userAssignments(userId, PLATFORM_AUDITOR_ROLE)]);
+    const organizations = await Promise.all(
+      member.map(async (a) => (await this.get<{ name: string }>(`api/gateway/v1/organizations/${a.object_id}/`)).name),
+    );
+    return { organizations: organizations.sort((a, b) => a.localeCompare(b)), auditor: auditor.length > 0 };
+  }
+
+  private async syncUserRoles(userId: number, organizations: number[], auditor: boolean): Promise<void> {
+    const member = await this.userAssignments(userId, ORGANIZATION_MEMBER_ROLE);
+    const current = new Map(member.map((a) => [Number(a.object_id), a.id]));
+    for (const [organization, assignment] of current) {
+      if (!organizations.includes(organization)) {
+        await this.request('DELETE', `api/gateway/v1/role_user_assignments/${assignment}/`);
+      }
+    }
+    const missing = organizations.filter((organization) => !current.has(organization));
+    if (missing.length) {
+      const role = await this.gatewayRoleId(ORGANIZATION_MEMBER_ROLE);
+      for (const organization of missing) {
+        await this.request('POST', 'api/gateway/v1/role_user_assignments/', {
+          body: { role_definition: role, user: userId, object_id: String(organization) },
+        });
+      }
+    }
+    const audits = await this.userAssignments(userId, PLATFORM_AUDITOR_ROLE);
+    if (auditor && !audits.length) {
+      await this.request('POST', 'api/gateway/v1/role_user_assignments/', {
+        body: { role_definition: await this.gatewayRoleId(PLATFORM_AUDITOR_ROLE), user: userId },
+      });
+    } else if (!auditor) {
+      for (const audit of audits) {
+        await this.request('DELETE', `api/gateway/v1/role_user_assignments/${audit.id}/`);
+      }
+    }
+  }
+
+  private async userAssignments(userId: number, roleName: string): Promise<RoleUserAssignment[]> {
+    const role = await this.gatewayRoleId(roleName);
+    return this.listAll<RoleUserAssignment>(`api/gateway/v1/role_user_assignments/?user=${userId}&role_definition=${role}`);
+  }
+
+  private readonly roleIds = new Map<string, Promise<number>>();
+
+  /** ID of a built-in gateway role definition, looked up once per client. */
+  private gatewayRoleId(roleName: string): Promise<number> {
+    let id = this.roleIds.get(roleName);
+    if (!id) {
+      id = this.findId('api/gateway/v1/', 'role_definitions', roleName, 'role_definition');
+      id.catch(() => this.roleIds.delete(roleName));
+      this.roleIds.set(roleName, id);
+    }
+    return id;
+  }
+
+  /** Creates a gateway team in an organization. */
+  async createTeam(input: TeamInput): Promise<{ id: number; name: string }> {
+    return this.request('POST', 'api/gateway/v1/teams/', { body: await this.teamBody(input) });
+  }
+
+  async updateTeam(id: number, input: TeamInput): Promise<{ id: number; name: string }> {
+    return this.request('PATCH', `api/gateway/v1/teams/${id}/`, { body: await this.teamBody(input) });
+  }
+
+  private async teamBody(input: TeamInput) {
+    return {
+      name: input.name,
+      description: input.description,
+      organization: await this.findId('api/gateway/v1/', 'organizations', input.organization, 'organization'),
+    };
+  }
+
+  private gatewayIds(endpoint: string, names: string[], field: string): Promise<number[]> {
+    return Promise.all(names.map((name) => this.findId('api/gateway/v1/', endpoint, name, field)));
+  }
+
+  /** Creates a custom role definition (controller on AAP 2.5, gateway on 2.6+). */
+  async createRoleDefinition(input: RoleDefinitionInput): Promise<RoleDefinition> {
+    return this.request<RoleDefinition>('POST', `${await this.rbacApi()}role_definitions/`, {
+      body: {
+        name: input.name,
+        description: input.description ?? '',
+        content_type: input.contentType,
+        permissions: input.permissions,
+      },
+    });
+  }
+
+  /** Updates a custom role; its content type cannot change, so it is not sent. */
+  async updateRoleDefinition(id: number, input: RoleDefinitionInput): Promise<RoleDefinition> {
+    return this.request<RoleDefinition>('PATCH', `${await this.rbacApi()}role_definitions/${id}/`, {
+      body: { name: input.name, description: input.description ?? '', permissions: input.permissions },
+    });
+  }
+
   private async inventorySourceBody(input: InventorySourceInput) {
     const scm = input.source === 'scm';
     const [inventory, sourceProject, credential, executionEnvironment] = await Promise.all([
@@ -765,10 +1142,15 @@ export class AapClient {
   }
 
   /** Looks up a controller object by exact name; unknown or ambiguous names fail with a field error. */
-  private async findControllerId(endpoint: string, name: string, field: string): Promise<number> {
+  private findControllerId(endpoint: string, name: string, field: string): Promise<number> {
+    return this.findId('api/controller/v2/', endpoint, name, field);
+  }
+
+  /** ID of the object of an API (e.g. "api/gateway/v1/") with exactly this name. */
+  private async findId(api: string, endpoint: string, name: string, field: string): Promise<number> {
     const page = await this.request<{ results: { id: number; name: string }[] }>(
       'GET',
-      `api/controller/v2/${endpoint}/?name=${encodeURIComponent(name)}`,
+      `${api}${endpoint}/?name=${encodeURIComponent(name)}`,
     );
     const matches = page.results.filter((item) => item.name === name);
     const plural = endpoint.replace(/_/g, ' ');
@@ -825,7 +1207,9 @@ export class AapClient {
             const text = Buffer.concat(chunks).toString('utf8');
             const status = res.statusCode ?? 0;
             if (status < 200 || status >= 300) {
-              reject(new AapHttpError(status, describeHttpError(status, text, res.headers.location), text));
+              const message = describeHttpError(status, text, res.headers.location);
+              // A 404 says nothing without the URL; name it so the failing call can be found.
+              reject(new AapHttpError(status, status === 404 ? `${message} (${method} ${url.pathname})` : message, text));
               return;
             }
             if (!text) {

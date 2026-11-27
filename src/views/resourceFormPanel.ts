@@ -10,9 +10,10 @@ export interface FormField {
   label: string;
   /**
    * Checkbox values are passed to parse() as "true" / "false"; a checkgroup (a grid of checkboxes
-   * built from `options`) as the comma-separated values of the checked boxes.
+   * built from `options`) as the comma-separated values of the checked boxes. A password field is a
+   * masked text input that the browser does not autofill.
    */
-  type: 'text' | 'number' | 'textarea' | 'code' | 'select' | 'checkbox' | 'checkgroup';
+  type: 'text' | 'password' | 'number' | 'textarea' | 'code' | 'select' | 'checkbox' | 'checkgroup';
   required?: boolean;
   hint?: string;
   placeholder?: string;
@@ -47,10 +48,15 @@ export interface FieldLookup {
  * Loading existing objects into a form (Online Mode) so they can be edited, renamed and saved back.
  */
 export interface ExistingSupport<T> {
-  /** List endpoint of the objects, e.g. "api/controller/v2/projects/". */
-  endpoint: string;
+  /**
+   * List endpoint of the objects, e.g. "api/controller/v2/projects/"; a function when it depends on
+   * the AAP release.
+   */
+  endpoint: string | ((client: AapClient) => Promise<string>);
   /** Extra list filters, e.g. "managed=false". */
   query?: string;
+  /** Sort field of the list; "name" unless the objects have none (users sort by "username"). */
+  orderBy?: string;
   /**
    * Filter parameter taking a controller organization ID (e.g. "organization" or
    * "inventory__organization"); when set, the objects are picked by organization.
@@ -311,11 +317,12 @@ export class ResourceFormPanel<T extends { name: string }> {
       return;
     }
     try {
-      const filters = ['order_by=name', existing.query, organization && existing.organizationFilter ? `${existing.organizationFilter}=${organization}` : '']
+      const filters = [`order_by=${existing.orderBy ?? 'name'}`, existing.query, organization && existing.organizationFilter ? `${existing.organizationFilter}=${organization}` : '']
         .filter(Boolean)
         .join('&');
+      const endpoint = typeof existing.endpoint === 'string' ? existing.endpoint : await existing.endpoint(client);
       const [objects, organizations] = await Promise.all([
-        client.listAll<ListedObject>(`${existing.endpoint}?${filters}`),
+        client.listAll<ListedObject>(`${endpoint}?${filters}`),
         withOrganizations && existing.organizationFilter
           ? client.listAll<{ id: number; name: string }>('api/controller/v2/organizations/?order_by=name')
           : undefined,
@@ -408,8 +415,12 @@ export class ResourceFormPanel<T extends { name: string }> {
 /** The fields of a listed object used to describe it in the "load existing" list. */
 interface ListedObject {
   id: number;
-  name: string;
+  /** Users have a username instead. */
+  name?: string;
+  username?: string;
   kind?: string;
+  /** Role definitions: the kind of object the role applies to, e.g. "awx.jobtemplate". */
+  content_type?: string;
   summary_fields?: { organization?: { name: string }; inventory?: { name: string }; credential_type?: { name: string } };
 }
 
@@ -418,9 +429,11 @@ function describeListed(item: ListedObject, withOrganization: boolean): string {
     item.summary_fields?.credential_type?.name,
     item.summary_fields?.inventory && `inventory ${item.summary_fields.inventory.name}`,
     item.kind === 'smart' ? 'smart' : item.kind === 'constructed' ? 'constructed' : undefined,
+    item.content_type,
     withOrganization ? item.summary_fields?.organization?.name : undefined,
   ].filter(Boolean);
-  return details.length ? `${item.name} (${details.join(', ')})` : item.name;
+  const name = item.name ?? item.username ?? `#${item.id}`;
+  return details.length ? `${name} (${details.join(', ')})` : name;
 }
 
 function titleCase(text: string): string {
@@ -447,6 +460,9 @@ function renderField(field: FormField): string {
   switch (field.type) {
     case 'text':
       control = `<input id="${id}" maxlength="512" autocomplete="off" value="${escapeHtml(value)}"${placeholder}>`;
+      break;
+    case 'password':
+      control = `<input id="${id}" type="password" maxlength="512" autocomplete="new-password" value="${escapeHtml(value)}"${placeholder}>`;
       break;
     case 'number': {
       const bounds = `${field.min !== undefined ? ` min="${field.min}"` : ''}${field.max !== undefined ? ` max="${field.max}"` : ''}`;

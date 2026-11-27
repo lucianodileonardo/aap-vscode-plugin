@@ -120,12 +120,18 @@ export function connectionVars(session: AapSession | undefined, verifyTls: boole
   return lines.map((line) => `    ${line}`).join('\n');
 }
 
+/** A role name, or a role with role variables (values are written as given, e.g. a Jinja reference). */
+export type PlaybookRole = string | { name: string; vars: Record<string, string> };
+
 export interface ConfigurationPlaybookOptions {
   /** One-line summary for the header comment. */
   title: string;
   playName: string;
-  /** Role(s) of the infra.aap_configuration collection, e.g. "gateway_organizations", applied in order. */
-  role: string | string[];
+  /**
+   * Role(s) of the infra.aap_configuration collection, e.g. "gateway_organizations", applied in order.
+   * A role given as { name, vars } gets role variables, e.g. to read its input from another variable.
+   */
+  role: PlaybookRole | PlaybookRole[];
   /** The role's input variable(s) as YAML at column 0, e.g. "aap_organizations:\n  - name: ...". */
   data: string;
   session: AapSession | undefined;
@@ -146,7 +152,15 @@ export interface ConfigurationPlaybookOptions {
  */
 export function configurationPlaybook(options: ConfigurationPlaybookOptions): string {
   const { title, playName, role, data, session, verifyTls, vaultId, notes = [] } = options;
-  const roles = (Array.isArray(role) ? role : [role]).map((name) => `    - infra.aap_configuration.${name}`).join('\n');
+  const roles = (Array.isArray(role) ? role : [role])
+    .map((entry) =>
+      typeof entry === 'string'
+        ? `    - infra.aap_configuration.${entry}`
+        : `    - role: infra.aap_configuration.${entry.name}\n      vars:\n${Object.entries(entry.vars)
+            .map(([key, value]) => `        ${key}: ${value}`)
+            .join('\n')}`,
+    )
+    .join('\n');
   const noteLines = notes.length ? `${notes.map((line) => `# ${line}`.trimEnd()).join('\n')}\n#\n` : '';
   const secret = session?.authKind === 'token' ? 'AAP_TOKEN=<api token>' : 'AAP_PASSWORD=<password>';
   const vaultOption =
