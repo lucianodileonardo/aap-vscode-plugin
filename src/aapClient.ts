@@ -41,6 +41,19 @@ export interface Organization {
 export interface OrganizationInput {
   name: string;
   description?: string;
+  /** Controller settings of the organization, by name. Galaxy credentials are in search order. */
+  galaxyCredentials: string[];
+  /** Default execution environment ('' = none). */
+  defaultEnvironment: string;
+  /** Instance groups in order of preference. */
+  instanceGroups: string[];
+}
+
+/** Controller-side settings of an organization, read back by name for editing. */
+export interface OrganizationSettings {
+  galaxyCredentials: string[];
+  defaultEnvironment: string;
+  instanceGroups: string[];
 }
 
 /** Custom credential types can only be of kind "cloud" or "net". */
@@ -370,6 +383,14 @@ function userBody(input: UserInput) {
   };
 }
 
+/** How long to wait for a gateway organization to appear in controller: 15 tries, 1 s apart. */
+export const ORGANIZATION_SYNC_ATTEMPTS = 15;
+export let ORGANIZATION_SYNC_DELAY_MS = 1000;
+/** For tests. */
+export function setOrganizationSyncDelay(ms: number): void {
+  ORGANIZATION_SYNC_DELAY_MS = ms;
+}
+
 function organizationBody(input: OrganizationInput) {
   return { name: input.name, description: input.description ?? '' };
 }
@@ -540,13 +561,85 @@ export class AapClient {
   // Each resource has a create (POST) and an update (PATCH of an existing object, which may also
   // rename it); both send the same body, built by a *Body method that resolves names to IDs first.
 
-  /** Creates an organization in the platform gateway; it is synced to controller, EDA and hub. */
-  createOrganization(input: OrganizationInput): Promise<Organization> {
-    return this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: organizationBody(input) });
+  /**
+   * Creates an organization in the platform gateway (it is synced to controller, EDA and hub),
+   * then sets its controller settings: galaxy credentials, default execution environment and
+   * instance groups. Those names are resolved before anything is created.
+   */
+  async createOrganization(input: OrganizationInput): Promise<Organization> {
+    const settings = await this.organizationSettingIds(input);
+    const org = await this.request<Organization>('POST', 'api/gateway/v1/organizations/', { body: organizationBody(input) });
+    if (settings.defaultEnvironment !== null || settings.galaxyCredentials.length || settings.instanceGroups.length) {
+      await this.afterCreate(`Organization "${org.name}" (id ${org.id})`, 'galaxy credentials, execution environment or instance groups', () =>
+        this.applyOrganizationSettings(org.name, settings),
+      );
+    }
+    return org;
   }
 
-  updateOrganization(id: number, input: OrganizationInput): Promise<Organization> {
-    return this.request<Organization>('PATCH', `api/gateway/v1/organizations/${id}/`, { body: organizationBody(input) });
+  /** Updates an organization in the gateway; its controller settings are made to match the input. */
+  async updateOrganization(id: number, input: OrganizationInput): Promise<Organization> {
+    const settings = await this.organizationSettingIds(input);
+    const org = await this.request<Organization>('PATCH', `api/gateway/v1/organizations/${id}/`, { body: organizationBody(input) });
+    await this.applyOrganizationSettings(org.name, settings);
+    return org;
+  }
+
+  /** Galaxy credentials, default execution environment and instance groups of an organization. */
+  async organizationSettings(name: string): Promise<OrganizationSettings> {
+    const id = await this.findControllerId('organizations', name, 'name');
+    const org = await this.get<{ default_environment: number | null }>(`api/controller/v2/organizations/${id}/`);
+    const [defaultEnvironment, galaxyCredentials, instanceGroups] = await Promise.all([
+      this.controllerName('execution_environments', org.default_environment),
+      this.relatedNames(`organizations/${id}/galaxy_credentials/`),
+      this.relatedNames(`organizations/${id}/instance_groups/`),
+    ]);
+    return { galaxyCredentials, defaultEnvironment, instanceGroups };
+  }
+
+  private async organizationSettingIds(input: OrganizationInput) {
+    const lookupAll = (endpoint: string, names: string[], field: string) =>
+      Promise.all(names.map((name) => this.findControllerId(endpoint, name, field)));
+    const [galaxyCredentials, defaultEnvironment, instanceGroups] = await Promise.all([
+      lookupAll('credentials', input.galaxyCredentials, 'galaxy_credentials'),
+      input.defaultEnvironment
+        ? this.findControllerId('execution_environments', input.defaultEnvironment, 'default_environment')
+        : null,
+      lookupAll('instance_groups', input.instanceGroups, 'instance_groups'),
+    ]);
+    return { galaxyCredentials, defaultEnvironment, instanceGroups };
+  }
+
+  /**
+   * Sets the controller settings on the controller copy of a gateway organization. A new or
+   * renamed organization reaches controller through the gateway's resource sync, so the
+   * lookup by name is retried for a short while.
+   */
+  private async applyOrganizationSettings(
+    name: string,
+    settings: { galaxyCredentials: number[]; defaultEnvironment: number | null; instanceGroups: number[] },
+  ): Promise<void> {
+    const id = await this.waitForControllerOrganization(name);
+    await this.request('PATCH', `api/controller/v2/organizations/${id}/`, { body: { default_environment: settings.defaultEnvironment } });
+    const galaxy = `organizations/${id}/galaxy_credentials/`;
+    const groups = `organizations/${id}/instance_groups/`;
+    // Read the current lists even for a new organization: the sync may attach defaults.
+    // Both lists are ordered: galaxy credentials are searched in order, instance groups are a preference.
+    await this.syncRelated(galaxy, await this.relatedIds(galaxy), settings.galaxyCredentials, true);
+    await this.syncRelated(groups, await this.relatedIds(groups), settings.instanceGroups, true);
+  }
+
+  private async waitForControllerOrganization(name: string): Promise<number> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.findControllerId('organizations', name, 'name');
+      } catch (err) {
+        if (attempt >= ORGANIZATION_SYNC_ATTEMPTS || !(err instanceof AapHttpError && err.status === 400)) {
+          throw err;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ORGANIZATION_SYNC_DELAY_MS));
+      }
+    }
   }
 
   /** Creates a custom credential type in automation controller (reached through the gateway). */

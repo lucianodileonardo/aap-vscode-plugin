@@ -20,15 +20,28 @@ Work with Red Hat Ansible Automation Platform **2.5, 2.6 and 2.7** from the edit
 - AAP 2.4 and earlier (no platform gateway) and versions newer than 2.7 are rejected.
 
 ### Organizations
-**AAP: Create Organization** opens a form (name, description) in an editor tab, also reachable
-from the status bar menu. Choose one or both actions:
+**AAP: Create Organization** opens a form in an editor tab, also reachable from the status bar
+menu. Besides the name and description it takes the organization's automation controller settings:
+
+- **Galaxy credentials** — "Ansible Galaxy/Automation Hub API Token" credentials, in the order
+  collections are searched (e.g. private automation hub first, then Ansible Galaxy).
+- **Default execution environment** (optional) — used by the organization's jobs when neither the
+  job template nor the project sets one.
+- **Instance groups** (optional) — in order of preference.
+
+Choose one or both actions:
 
 - **Use AAP API** — creates the organization right away through the platform gateway API. Errors
   from AAP (e.g. a name that already exists) are shown next to the field. Needs a login with rights
-  to create organizations (e.g. a platform admin).
+  to create organizations (e.g. a platform admin). The galaxy credentials, execution environment
+  and instance groups are then set on the controller copy of the organization, once the gateway
+  has synced it (the extension waits up to 15 seconds). When editing, these lists are made to
+  match the form, including removals and order.
 - **Generate Playbook** — opens an unsaved playbook that creates the same organization with the
-  `infra.aap_configuration.gateway_organizations` role. Works without logging in. No secrets are
-  written to it:
+  `infra.aap_configuration.gateway_organizations` role, then sets the controller settings with
+  `controller_organizations` (fed from its own list under the final name, so a rename works).
+  Settings removed in an edit are listed in the header: the role does not remove them. Works
+  without logging in. No secrets are written to it:
   ```bash
   ansible-galaxy collection install infra.aap_configuration ansible.platform ansible.controller
   AAP_PASSWORD=... ansible-playbook create_org.yml     # or AAP_TOKEN=... for token logins

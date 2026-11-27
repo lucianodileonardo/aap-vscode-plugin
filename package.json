@@ -2,7 +2,7 @@
   "name": "aap-vscode",
   "displayName": "Ansible Automation Platform",
   "description": "Ansible Automation Platform VSCode plugin: manage AAP through Configuration as Code. Work with Red Hat Ansible Automation Platform 2.5 / 2.6 / 2.7",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "lucianodileonardo",
   "license": "MIT",
   "icon": "media/icon.png",
